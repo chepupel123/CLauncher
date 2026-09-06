@@ -141,11 +141,3 @@ The download stalled halfway. Press Play again; everything resumes from where it
 DEVELOPMENT LOG
 
 The full version history with debugging stories, including the Fabric classloader conflict, the segfault on a long classpath, and asset index inheritance, is in the DEVELOPMENT.md file.
-
-LICENSE
-
-MIT. Copyright 2026 chepupel123. Full text in the LICENSE file.
-
-ACKNOWLEDGEMENTS
-
-Dear ImGui for the interface. Fabric for the mod loader. Modrinth for the mods API. Adoptium for the Java builds. Minecraft belongs to Mojang and Microsoft; this project is not affiliated with them.
