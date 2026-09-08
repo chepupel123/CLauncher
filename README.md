@@ -1,56 +1,56 @@
-Minecraft Launcher for Linux & Windows
+CLauncher
 
-Лёгкий нативный лаунчер Minecraft на C++20 с интерфейсом на Dear ImGui и OpenGL. Спроектирован и написан одним разработчиком под старое железо: без рекламы, без телеметрии, без магазина, без обязательного аккаунта для оффлайн-игры.
+A lightweight native Minecraft launcher for Linux and Windows, written in C++20 with a Dear ImGui interface and OpenGL. Designed and built by a single developer for older hardware: no ads, no telemetry, no store, no account required for offline play.
 
-Требуется OpenGL 3.0 и выше. Работает на Linux (Mint, Ubuntu, Debian) и Windows 10/11. Бинарник около трёх мегабайт, потребление памяти 30–50 мегабайт. Основная машина для разработки и тестов — настольный компьютер 2012 года, и это осознанное ограничение: если лаунчер и игра плавно работают там, они работают везде.
+Requires OpenGL 3.0 or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 10/11. The binary is about three megabytes and uses 30 to 50 MB of RAM. The reference development machine is a 2012 desktop computer, and that is a deliberate constraint: if the launcher and the game run smoothly there, they run everywhere.
 
-ЧТО УМЕЕТ
+FEATURES
 
-Установка Vanilla Minecraft прямо из лаунчера: клиент, библиотеки, ассеты и нативные библиотеки скачиваются автоматически с официальных серверов Mojang.
+Vanilla Minecraft installation straight from the launcher: client, libraries, assets and native libraries are downloaded automatically from the official Mojang servers.
 
-Поддержка Fabric. Установка через официальный инсталлятор, версия загрузчика берётся актуальная с серверов Fabric Meta.
+Fabric support. Installed through the official Fabric installer, and the loader version is kept current from Fabric Meta.
 
-Оптимизационные моды одной галочкой: Sodium, Lithium и FerriteCore. Версии модов подбираются автоматически под выбранную версию Minecraft через API Modrinth.
+Performance mods with one checkbox: Sodium, Lithium and FerriteCore. Mod versions are matched automatically to the selected Minecraft version through the Modrinth API.
 
-Свои моды. Кнопка My Mods открывает папку модов конкретной версии Fabric. Любой jar-файл, положенный туда вручную, загружается при запуске игры. У каждой версии своя папка, поэтому моды разных версий не конфликтуют между собой.
+Your own mods. The My Mods button opens the mods folder for the selected Fabric version. Any jar file you drop there is loaded at game startup. Each version has its own folder, so mods never conflict between versions.
 
-Ресурспаки. Кнопка Resource Packs открывает общую папку ресурспаков. Zip-архив ресурспака, положенный туда, появляется в настройках игры.
+Resource packs. The Resource Packs button opens the shared resource pack folder. Drop a zip pack there and it appears in the in-game resource pack list.
 
-Автоматическое управление Java. Лаунчер сам скачивает нужную версию JRE (8, 17 или 21) под выбранную версию Minecraft с серверов Adoptium. Если в системе уже стоит подходящая Java, используется она. Поддерживаются пакетные менеджеры apt, dnf, pacman, zypper и apk.
+Automatic Java management. The launcher downloads the correct JRE version (8, 17 or 21) for the selected Minecraft version from Adoptium. If a matching Java is already installed in the system, it is used instead. Package managers supported: apt, dnf, pacman, zypper and apk.
 
-Параллельная загрузка. Ассеты Minecraft — это несколько тысяч мелких файлов. Лаунчер качает их пулом из шестнадцати потоков с переиспользованием соединений, что сокращает первую установку с часа до нескольких минут.
+Parallel downloads. Minecraft assets are thousands of small files. The launcher downloads them with a pool of sixteen threads and connection reuse, cutting the first installation from about an hour to a few minutes.
 
-Проверка целостности. Каждый скачанный файл — клиент, библиотеки, ассеты, моды — проверяется по SHA1. Повреждённые и недокачанные файлы перекачиваются автоматически при следующем запуске.
+Integrity checking. Every downloaded file, including client, libraries, assets and mods, is verified by SHA1. Corrupted and partially downloaded files are re-fetched automatically on the next launch.
 
-Отзывчивый интерфейс. Вся установка идёт в фоновом потоке, окно не зависает, прогресс виден в реальном времени.
+Responsive interface. All installation work runs in a background thread, the window never freezes, and progress is shown in real time.
 
-Два языка интерфейса. Английский и русский, переключение на лету, выбор сохраняется.
+Two interface languages. English and Russian, switchable on the fly, with the choice saved.
 
-Безопасный запуск. Игра запускается через execv на Linux и CreateProcessW на Windows, без привлечения командной оболочки. Длинный classpath передаётся через argfile, поэтому ни длина, ни спецсимволы в нике не могут сломать запуск.
+Safe game launch. The game starts through execv on Linux and CreateProcessW on Windows, with no shell involved. A long classpath is passed through an argfile, so neither its length nor special characters in the nickname can break the launch.
 
-ПОДДЕРЖИВАЕМЫЕ ВЕРСИИ
+SUPPORTED VERSIONS
 
-Vanilla: все официальные релизы из манифеста Mojang, включая линейку 26.x.
+Vanilla: every official release in the Mojang manifest, including the 26.x line.
 
-Fabric: версии с 1.14.x по 1.21.x. Для линейки 26.x поддержка Fabric сознательно не включена: Mojang перевели инструментарий модов на Java 25 и новый Loom, что ломает текущую экосистему загрузчика. Ванильная игра при этом работает.
+Fabric: versions from 1.14.x to 1.21.x. Fabric support for the 26.x line is intentionally not included: Mojang moved the modding toolchain to Java 25 and a new Loom, which breaks the current loader ecosystem. Vanilla for 26.x works fully.
 
-Требования к системе: Linux Mint 22, Ubuntu 20.04 или новее, Debian 10 или новее, либо Windows 10 и 11. OpenGL 3.0 и выше.
+System requirements: Linux Mint 22, Ubuntu 20.04 or newer, Debian 10 or newer, or Windows 10 and 11. OpenGL 3.0 or newer.
 
-БЫСТРЫЙ СТАРТ НА LINUX
+QUICK START ON LINUX
 
-Сначала установите зависимости. В терминале выполните:
+First install the dependencies. In a terminal run:
 
 sudo apt-get update
 sudo apt-get install -y build-essential cmake git libglfw3-dev libgl1-mesa-dev libcurl4-openssl-dev nlohmann-json3-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev fonts-dejavu-core
 
-Затем скачайте и подготовьте проект:
+Then get the project: click Code → Download ZIP on the repository page (or git clone) and enter the project folder:
 
-git clone https://github.com/chepupel123/minecraft-launcher-full.git
-cd minecraft-launcher-full
-mkdir -p extern
-git clone --depth 1 https://github.com/ocornut/imgui.git extern/imgui
+git clone https://github.com/chepupel123/CLauncher.git
+cd CLauncher
 
-Соберите:
+Dear ImGui is already bundled with the project (the extern/imgui folder), so there is nothing extra to download.
+
+Build it:
 
 rm -rf build
 mkdir build
@@ -58,82 +58,84 @@ cd build
 cmake ..
 make -j$(nproc)
 
-Запустите:
+Run it:
 
-./minecraft-launcher
+./CLauncher
 
-БЫСТРЫЙ СТАРТ НА WINDOWS
+QUICK START ON WINDOWS
 
-Понадобится MSYS2. Скачайте установщик с сайта msys2.org и установите в C:\msys64. Откройте терминал MSYS2 MINGW64 и выполните:
+You will need MSYS2. Download the installer from msys2.org and install it to C:\msys64. Open the MSYS2 MINGW64 terminal and run:
 
 pacman -Syu
 pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-curl mingw-w64-x86_64-glfw mingw-w64-x86_64-nlohmann-json make
 
-Затем в терминале перейдите в папку проекта и соберите:
+Then navigate to the project folder and build:
 
+mkdir build
+cd build
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja
 
-Появится файл minecraft-launcher.exe. При первом запуске SmartScreen или антивирус может спросить разрешение — это нормально, лаунчер вызывает PowerShell для распаковки Java. Нажмите Подробнее, затем Выполнить в любом случае.
+This produces CLauncher.exe. On first launch, SmartScreen or your antivirus may ask for permission. That is normal, the launcher calls PowerShell to unpack Java. Click More info, then Run anyway.
 
-КАК ЭТО РАБОТАЕТ ВНУТРИ
+HOW IT WORKS UNDER THE HOOD
 
-При нажатии кнопки Play лаунчер выполняет следующую цепочку.
+When you press Play, the launcher runs the following chain.
 
-Сначала MinecraftInstaller сверяется с манифестом Mojang и докачивает недостающее: клиент игры, библиотеки, несколько тысяч ассетов и нативные компоненты. Загрузка идёт параллельно, каждый файл проверяется по SHA1, недокачанные файлы сохраняются с временным расширением и переименовываются только после успешной проверки.
+First, MinecraftInstaller syncs with the Mojang manifest and downloads whatever is missing: the game client, libraries, several thousand asset files and native components. Downloads run in parallel, every file is checked by SHA1, and partial downloads are saved with a temporary extension and renamed only after a successful check.
 
-Если выбран Fabric, запускается официальный инсталлятор Fabric, версия загрузчика берётся актуальная с Fabric Meta, а затем с Modrinth скачиваются Sodium, Lithium и FerriteCore, подобранные под вашу версию игры.
+If Fabric is selected, the official Fabric installer runs, the loader version is taken live from Fabric Meta, and then Sodium, Lithium and FerriteCore are downloaded from Modrinth, matched to your game version.
 
-Если в системе нет подходящей Java, JavaManager скачивает нужную JRE с серверов Adoptium и распаковывает её в локальную папку. На Linux дополнительно проверяется системная Java и пакетные менеджеры основных дистрибутивов.
+If the system has no suitable Java, JavaManager downloads the matching JRE from the Adoptium servers and unpacks it into a local folder. On Linux, the system Java and the package managers of major distributions are also checked.
 
-Наконец, JavaLauncher запускает игру через execv на Linux или CreateProcessW на Windows. Никакой командной оболочки между лаунчером и игрой нет, длинный classpath передаётся через argfile. После успешного старта игры лаунчер закрывается сам через полторы секунды, а идентификатор процесса игры сохраняется в файл last_game.pid.
+Finally, JavaLauncher starts the game through execv on Linux or CreateProcessW on Windows. There is no shell between the launcher and the game, and a long classpath is passed through an argfile. After the game starts successfully, the launcher closes itself after a second and a half, and the game process id is saved to the last_game.pid file.
 
-Ключевые архитектурные решения. Используется одна общая папка Minecraft, совместимая с официальным лаунчером, поэтому миры и настройки общие. У каждой версии Fabric своя папка модов, поэтому моды не конфликтуют между версиями. При каждом запуске выполняется проверка целостности установленного, и докачивается только недостающее. Индекс ассетов для Fabric-профилей берётся из родительской ванильной версии через механизм наследования.
+Key architectural decisions. One shared Minecraft folder is used, compatible with the official launcher, so worlds and settings are shared. Each Fabric version has its own mods folder, so mods do not conflict between versions. Every launch runs an integrity check of what is installed, and only what is missing gets downloaded. The asset index for Fabric profiles is resolved from the parent vanilla version through inheritance.
 
-ИСПОЛЬЗОВАНИЕ
+USAGE
 
-Введите ник. Только латиница, цифры и знак подчёркивания, другие символы фильтруются автоматически.
+Enter a nickname. Latin letters, digits and underscore only; anything else is filtered automatically.
 
-Выберите версию из списка. Список берётся из официального манифеста Mojang и кешируется, поэтому работает и без интернета.
+Pick a version from the list. The list comes from the official Mojang manifest and is cached, so it works offline too.
 
-Выберите загрузчик: Vanilla или Fabric. Для Fabric доступна галочка оптимизационных модов.
+Pick a loader: Vanilla or Fabric. For Fabric there is a performance mods checkbox.
 
-Выберите объём памяти. Рекомендуется 2048 мегабайт.
+Pick the memory amount. 2048 MB is recommended.
 
-Нажмите Play. При первой установке наберитесь терпения, дальше запуски мгновенные.
+Press Play. The first installation takes a while; launches after that are instant.
 
-Кнопка My Mods открывает папку модов текущей версии Fabric. Кнопка Resource Packs открывает папку ресурспаков. В правом верхнем углу — переключатель языка.
+The My Mods button opens the mods folder of the current Fabric version. The Resource Packs button opens the resource packs folder. In the top right corner there is the language switch.
 
-ГДЕ ЧТО ЛЕЖИТ
+WHERE THINGS LIVE
 
-На Linux: сама игра в папке .minecraft в домашнем каталоге, миры в .minecraft/saves, моды в .minecraft/versions/имя-версии/mods, ресурспаки в .minecraft/resourcepacks, скачанная Java в .minecraft-launcher/runtime, настройки лаунчера в .minecraft-launcher/launcher_settings.json.
+On Linux: the game itself in the .minecraft folder of your home directory, worlds in .minecraft/saves, mods in .minecraft/versions/version-name/mods, resource packs in .minecraft/resourcepacks, downloaded Java in .minecraft-launcher/runtime, launcher settings in .minecraft-launcher/launcher_settings.json.
 
-На Windows: игра в папке .minecraft в вашем пользовательском каталоге, моды и миры аналогично, скачанная Java и настройки лаунчера в папке minecraft-launcher внутри AppData Roaming.
+On Windows: the game in the .minecraft folder of your user directory, mods and worlds the same way, and the downloaded Java and launcher settings in the minecraft-launcher folder inside AppData Roaming.
 
-ИДЕНТИФИКАТОР ИГРОКА БЕЗ АККАУНТА
+OFFLINE PLAYER IDENTITY
 
-Лаунчер генерирует детерминированный оффлайн-идентификатор из ника по схеме OfflinePlayer, как это делают сервера. Идентификатор стабилен между запусками, поэтому прогресс в мирах сохраняется корректно.
+The launcher generates a deterministic offline identifier from the nickname using the OfflinePlayer scheme, the same way servers do. The identifier is stable between launches, so your progress in worlds is preserved correctly.
 
-ИЗВЕСТНЫЕ ОГРАНИЧЕНИЯ
+KNOWN LIMITATIONS
 
-Fabric для линейки 26.x не поддерживается, потому что Mojang перевели инструментарий модов на Java 25 и новый Loom. Ваниль для 26.x работает полностью.
+Fabric for the 26.x line is not supported, because Mojang moved the modding toolchain to Java 25 and a new Loom. Vanilla for 26.x works fully.
 
-Антивирус может спросить разрешение при первом запуске на Windows: лаунчер вызывает PowerShell для распаковки Java.
+Your antivirus may ask for permission on the first Windows launch: the launcher calls PowerShell to unpack Java.
 
-Первая установка небыстрая: несколько тысяч файлов ассетов. Последующие запуски мгновенные, всё кешируется и проверяется по SHA1.
+The first installation is slow: several thousand asset files. Later launches are instant, everything is cached and SHA1-checked.
 
-Кириллица в нике не принимается намеренно: ник попадает на сервера и в файлы миров, там безопасен только ограниченный набор символов.
+Cyrillic in nicknames is rejected on purpose: the nickname goes to servers and into world files, where only a limited character set is safe.
 
-ЕСЛИ ЧТО-ТО НЕ РАБОТАЕТ
+IF SOMETHING DOES NOT WORK
 
-Ошибка GLFW init failed. Не установлен GLFW или запуск идёт не в графической сессии. Установите libglfw3-dev.
+GLFW init failed error. GLFW is not installed, or you are launching outside a graphical session. Install libglfw3-dev.
 
-Вопросики вместо текста. Не найден шрифт с кириллицей. Установите fonts-dejavu-core.
+Question marks instead of text. A font with Cyrillic support was not found. Install fonts-dejavu-core.
 
-Скачивание Java не удалось. Проверьте интернет, либо установите Java вручную: если мажорная версия совпадает, лаунчер использует системную.
+Java download failed. Check your internet, or install Java manually: if the major version matches, the launcher uses the system one.
 
-Пропали звуки или пустой список языков. Нажмите Play на этой версии ещё раз: лаунчер проверит ассеты и докачает недостающее.
+Missing sounds or empty language list. Press Play for that version once more: the launcher will verify the assets and fetch whatever is missing.
 
-Игра вылетает сразу после старта. Чаще всего мод не от вашей версии Minecraft. Удалите его из папки модов.
+The game crashes right after startup. Most likely a mod built for a different Minecraft version. Remove it from the mods folder.
 
-Загрузка остановилась на середине. Нажмите Play снова, всё продолжится с места обрыва.
+The download stalled halfway. Press Play again; everything resumes from where it stopped.
