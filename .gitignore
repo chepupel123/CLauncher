@@ -1,0 +1,51 @@
+# ---- Build directories (CMake / MSVC / IDEs) ----
+build/
+cmake-build-*/
+out/
+dist/
+*.xcodeproj/
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+Makefile
+
+# ---- Compiled binaries and objects ----
+*.o
+*.obj
+*.exe
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.pdb
+*.ilk
+*.exp
+CLauncher
+CLauncher.exe
+minecraft-launcher
+minecraft-launcher.exe
+
+# ---- Compiler / toolchain artifacts ----
+*.ninja
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# ---- Runtime artifacts of the launcher ----
+last_game.pid
+*.log
+
+# ---- Editor / OS junk ----
+.DS_Store
+Thumbs.db
+*~
+*.swp
