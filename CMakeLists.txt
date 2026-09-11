@@ -68,10 +68,6 @@ if(WIN32)
         Threads::Threads
         shell32 user32 gdi32 advapi32
     )
-    # Статическая линковка рантайма GCC, чтобы .exe не требовал рядом
-    # libstdc++-6.dll, libgcc_s_seh-1.dll и libwinpthread-1.dll.
-    # Требует, чтобы в MSYS2 были установлены СТАТИЧЕСКИЕ версии glfw/curl
-    # (они идут в комплекте с пакетами mingw-w64-*-glfw и mingw-w64-*-curl).
     target_link_options(CLauncher PRIVATE -static-libgcc -static-libstdc++ -static)
 else()
     target_link_libraries(CLauncher PRIVATE
@@ -102,3 +98,4 @@ if(NOT WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Release")
         COMMAND ${CMAKE_STRIP} $<TARGET_FILE:CLauncher>
     )
 endif()
+
