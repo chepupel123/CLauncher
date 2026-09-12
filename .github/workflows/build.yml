@@ -52,7 +52,10 @@ jobs:
 
   # ================= LINUX APPIMAGE =================
   build-appimage:
-    runs-on: ubuntu-20.04
+    # ubuntu-22.04: быстрее и надёжнее раннера, чем 20.04.
+    # AppImage будет требовать glibc 2.35+ (Ubuntu 22.04+, Debian 12+, Mint 21+).
+    # Для более старых систем есть сборка из исходников.
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
