@@ -34,7 +34,19 @@ Vanilla: every official release in the Mojang manifest, including the 26.x line.
 
 Fabric: versions from 1.14.x to 1.21.x. Fabric support for the 26.x line is intentionally not included: Mojang moved the modding toolchain to Java 25 and a new Loom, which breaks the current loader ecosystem. Vanilla for 26.x works fully.
 
-System requirements: Linux Mint 22, Ubuntu 20.04 or newer, Debian 10 or newer, or Windows 10 and 11. OpenGL 3.0 or newer.
+System requirements: Linux Mint 21+, Ubuntu 22.04+, Debian 12+, or Windows 10 and 11. OpenGL 3.0 or newer. The prebuilt AppImage needs glibc 2.35 or newer; on older systems build from source.
+
+DOWNLOAD
+
+Ready-to-use builds are available on the Releases page:
+
+CLauncher-linux-x64.tar.gz — Linux (stable, Ubuntu/Debian family, needs the dependencies below).
+
+CLauncher-x86_64.AppImage — Linux (any distribution with glibc 2.35+; download, make executable, run).
+
+CLauncher-beta.exe — Windows 10/11 (beta, not yet tested on a real Windows system).
+
+If you prefer to build from source, follow the steps below.
 
 QUICK START ON LINUX
 
