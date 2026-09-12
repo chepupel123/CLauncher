@@ -31,10 +31,13 @@ bool VersionManager::has_manifest_cache() {
 long VersionManager::get_cache_timestamp() {
     auto path = get_manifest_cache_path();
     if (!fs::exists(path)) return 0;
-    // Portable conversion: clock_cast handles both libstdc++ (file_time_type ==
-    // system_clock) and MSVC (file_time_type == file_clock).
-    auto sctp = std::chrono::clock_cast<std::chrono::system_clock>(
-        fs::last_write_time(path));
+    auto ftime = fs::last_write_time(path);
+#if defined(_MSC_VER)
+    auto sctp = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
+#else
+    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+#endif
     return std::chrono::system_clock::to_time_t(sctp);
 }
 
