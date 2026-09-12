@@ -59,6 +59,12 @@ endif()
 # ========== BUILD EXECUTABLE ==========
 add_executable(CLauncher ${SOURCES})
 
+# Иконка .exe (Windows): вшиваем clauncher.ico через ресурс-файл.
+# windres обрабатывает .rc автоматически, когда файл добавлен в исходники.
+if(WIN32)
+    target_sources(CLauncher PRIVATE clauncher.rc)
+endif()
+
 # ========== LINK LIBRARIES ==========
 if(WIN32)
     target_link_libraries(CLauncher PRIVATE
