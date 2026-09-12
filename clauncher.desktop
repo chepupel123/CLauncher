@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CLauncher
+Comment=Lightweight native Minecraft launcher
+Exec=CLauncher
+Icon=clauncher
+Terminal=false
+Categories=Game;Utility;
