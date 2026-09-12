@@ -688,6 +688,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     game_args.push_back("{}");
     game_args.push_back("--versionType");
     game_args.push_back("release");
+    game_args.push_back("--fullScreen");
 
 
     std::vector<std::string> exec_args;
