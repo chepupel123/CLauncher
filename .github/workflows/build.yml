@@ -52,8 +52,6 @@ jobs:
 
   # ================= LINUX APPIMAGE =================
   build-appimage:
-    # Собираем на СТАРОМ Ubuntu 20.04, чтобы AppImage работал на всех
-    # более новых дистрибутивах (старый glibc = широкая совместимость).
     runs-on: ubuntu-20.04
 
     steps:
@@ -88,10 +86,13 @@ jobs:
 
       - name: Download linuxdeploy
         run: |
-          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          wget --timeout=60 --tries=3 -q \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
           chmod +x linuxdeploy-x86_64.AppImage
 
       - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"   # обход FUSE на раннере GitHub
         run: |
           export OUTPUT="CLauncher-x86_64.AppImage"
           ./linuxdeploy-x86_64.AppImage \
