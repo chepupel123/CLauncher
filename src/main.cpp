@@ -9,6 +9,12 @@
 #include <windows.h>
 #include <cstdlib>
 #include <string>
+
+// MinGW-сборка libcurl использует OpenSSL, который вне MSYS2 не знает, где
+// лежат корневые сертификаты, и тогда падает ЛЮБОЙ HTTPS-запрос (Mojang,
+// Adoptium, Modrinth). CI кладёт cacert.pem рядом с exe — указываем на него
+// через SSL_CERT_FILE до curl_global_init. Если сборка на schannel или файла
+// нет, переменная просто игнорируется.
 static void setup_ca_bundle() {
     wchar_t exe_path[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, exe_path, MAX_PATH);

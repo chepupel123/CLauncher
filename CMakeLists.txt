@@ -3,7 +3,9 @@ project(CLauncher CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+# Не задаём -O2/-march=native глобально: оптимизацию выбирает
+# CMAKE_BUILD_TYPE=Release, а -march=native привязывает бинарник к конкретному CPU
+# и ломает переносимость собранного лаунчера.
 
 # ========== FIND PACKAGES ==========
 find_package(glfw3 REQUIRED)

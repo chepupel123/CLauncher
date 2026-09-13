@@ -510,10 +510,20 @@ namespace
             auto native_info = downloads["classifiers"][native_classifier];
             std::string url = native_info["url"];
             std::string path = native_info["path"];
+            std::string native_sha = native_info.value("sha1", std::string());
             fs::path dest_jar = version_dir / "libraries" / path;
-            if (!fs::exists(dest_jar)) {
+            bool jar_ok = fs::exists(dest_jar) &&
+                          (native_sha.empty() || verify_sha1(dest_jar, native_sha));
+            if (!jar_ok) {
                 std::cout << "Downloading natives: " << path << "\n";
                 if (!download(url, dest_jar)) return false;
+                if (!native_sha.empty() && !verify_sha1(dest_jar, native_sha)) {
+                    std::cerr << "Natives SHA1 mismatch, retrying: " << path << "\n";
+                    if (!download(url, dest_jar) || !verify_sha1(dest_jar, native_sha)) {
+                        std::cerr << "Natives SHA1 mismatch persists: " << path << "\n";
+                        return false;
+                    }
+                }
                 downloaded_any = true;
             }
             native_jars.push_back(dest_jar);

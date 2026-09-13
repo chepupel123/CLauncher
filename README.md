@@ -16,7 +16,7 @@ Your own mods. The My Mods button opens the mods folder for the selected Fabric 
 
 Resource packs. The Resource Packs button opens the shared resource pack folder. Drop a zip pack there, then enable it in Minecraft's in-game resource pack menu.
 
-Automatic Java management. The launcher first checks whether a compatible system Java exists (via java -version); on Linux it can then install the matching JRE through the distribution package manager (apt, dnf, pacman, zypper or apk), and as a final fallback it always downloads a portable JRE (8, 17 or 21, matched to the Minecraft version) from Adoptium. On Windows only the portable JRE is used.
+Automatic Java management. The launcher first checks whether a compatible system Java exists (via `java -version`); on Linux it can then install the matching JRE through the distribution package manager (apt, dnf, pacman, zypper or apk), and as a final fallback it always downloads a portable JRE (8, 17 or 21, matched to the Minecraft version) from Adoptium. On Windows only the portable JRE is used.
 
 Parallel downloads. Minecraft assets are thousands of small files. The launcher downloads them with a pool of sixteen threads and connection reuse, cutting the first installation from about an hour to a few minutes.
 
@@ -86,13 +86,13 @@ cd build
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja
 
-This produces CLauncher.exe. It links dynamically against glfw3.dll and libcurl-4.dll from MSYS2, so either run it from the MINGW64 shell or copy those DLLs (and their dependencies) next to the exe — the release zip already bundles them together with a cacert.pem TLS trust store. On first launch SmartScreen or your antivirus may show a warning, because the exe is unsigned: click More info, then Run anyway. Java archives are extracted with the built-in tar.exe (Windows 10 1803+), with PowerShell used only as a fallback on older systems.
+This produces CLauncher.exe. It links dynamically against `glfw3.dll` and `libcurl-4.dll` from MSYS2, so either run it from the MINGW64 shell or copy those DLLs (and their dependencies) next to the exe — the release zip already bundles them together with a `cacert.pem` TLS trust store. On first launch SmartScreen or your antivirus may show a warning, because the exe is unsigned: click More info, then Run anyway. Java archives are extracted with the built-in `tar.exe` (Windows 10 1803+), with PowerShell used only as a fallback on older systems.
 
 HOW IT WORKS UNDER THE HOOD
 
 When you press Play, the launcher runs the following chain.
 
-First, MinecraftInstaller syncs with the Mojang manifest and downloads whatever is missing: the game client, libraries, several thousand asset files and native components. The parallel downloads write each file to a temporary .part name and rename it only after its SHA1 check succeeds; files with no published checksum are still retried on failure.
+First, MinecraftInstaller syncs with the Mojang manifest and downloads whatever is missing: the game client, libraries, several thousand asset files and native components. The parallel downloads write each file to a temporary `.part` name and rename it only after its SHA1 check succeeds; files with no published checksum are still retried on failure.
 
 If Fabric is selected, the official Fabric installer runs, the loader version is taken live from Fabric Meta, and then Sodium, Lithium and FerriteCore are downloaded from Modrinth, matched to your game version.
 
@@ -100,7 +100,7 @@ If the system has no suitable Java, JavaManager first looks for a system Java, t
 
 Finally, JavaLauncher starts the game through execv on Linux or CreateProcessW on Windows. There is no shell between the launcher and the game, and a long classpath is passed through an argfile. After the game starts successfully, the launcher closes itself after a second and a half, and the game process id is saved to the last_game.pid file.
 
-Key architectural decisions. CLauncher uses the standard .minecraft directory, compatible with the official launcher, so worlds, resource packs and other game data are shared. Each Fabric version has its own mods folder, so mods from different versions do not get mixed together. Every launch runs an integrity check of what is installed, and only missing or corrupted files get downloaded. The asset index for Fabric profiles is resolved from the parent vanilla version through inheritance (inheritsFrom).
+Key architectural decisions. CLauncher uses the standard `.minecraft` directory, compatible with the official launcher, so worlds, resource packs and other game data are shared. Each Fabric version has its own mods folder, so mods from different versions do not get mixed together. Every launch runs an integrity check of what is installed, and only missing or corrupted files get downloaded. The asset index for Fabric profiles is resolved from the parent vanilla version through inheritance (`inheritsFrom`).
 
 USAGE
 
@@ -124,13 +124,13 @@ On Windows: the game in the .minecraft folder of your user directory, mods and w
 
 OFFLINE PLAYER IDENTITY
 
-The launcher generates a deterministic offline UUID from the nickname using Minecraft's standard OfflinePlayer: naming scheme (a name-based MD5 UUID, version 3) — the same identifier an offline-mode server derives from the nickname. It is stable between launches, so your progress in worlds is preserved correctly.
+The launcher generates a deterministic offline UUID from the nickname using Minecraft's standard `OfflinePlayer:` naming scheme (a name-based MD5 UUID, version 3) — the same identifier an offline-mode server derives from the nickname. It is stable between launches, so your progress in worlds is preserved correctly.
 
 KNOWN LIMITATIONS
 
 The 26.x line is not supported at all (Vanilla included): it requires Java 25, targets newer hardware than this launcher aims at, and is still unstable. Choose 1.21.x or older.
 
-The Windows executable is unsigned, so SmartScreen or your antivirus may show a warning on the first launch (More info → Run anyway). Java is unpacked with Windows' built-in tar.exe (PowerShell is only a fallback).
+The Windows executable is unsigned, so SmartScreen or your antivirus may show a warning on the first launch (More info → Run anyway). Java is unpacked with Windows' built-in `tar.exe` (PowerShell is only a fallback).
 
 The first installation is slow: several thousand asset files. Later launches are much faster, because everything is cached and SHA1-checked and only missing files are downloaded.
 
