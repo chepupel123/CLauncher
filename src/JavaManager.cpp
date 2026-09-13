@@ -197,9 +197,10 @@ JavaManager::JavaVersion JavaManager::getRequiredJava(const std::string& version
         return JavaVersion::Java21;
     }
 
-    if (major >= 26) return JavaVersion::Java21;
-
-    throw std::runtime_error("Unsupported Minecraft version: " + mcVersion);
+    // Ветка 26.x и новее отфильтрована в VersionManager. Это предохранитель
+    // на случай ручного вызова с неподдерживаемой версией.
+    throw std::runtime_error(
+        "Unsupported Minecraft version (only the 1.x line is supported): " + mcVersion);
 }
 
 std::string JavaManager::getDownloadUrl(JavaVersion version)
