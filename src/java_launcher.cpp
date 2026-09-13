@@ -1,7 +1,7 @@
 #include "java_launcher.h"
 #include "JavaManager.h"
 #include "paths.h"
-
+ 
 #include <cstdlib>
 #include <sstream>
 #include <iostream>
@@ -14,7 +14,7 @@
 #include <cstring>
 #include <cstdio>
 #include <nlohmann/json.hpp>
-
+ 
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -25,24 +25,24 @@
 #include <windows.h>
 #include <shellapi.h>
 #endif
-
+ 
 #include <chrono>
 #include <thread>
-
+ 
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/wait.h>
 #endif
-
+ 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
-
+ 
 #ifdef _WIN32
 static const char CLASSPATH_SEP = ';';
 #else
 static const char CLASSPATH_SEP = ':';
 #endif
-
+ 
 static std::string getOptimizationFlags(int javaVersion) {
     if (javaVersion >= 17) {
         return "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=20 "
@@ -52,13 +52,13 @@ static std::string getOptimizationFlags(int javaVersion) {
                "-XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 "
                "-XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1";
     } else {
-
-
+ 
+ 
         return "-XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:+UseStringDeduplication "
                "-XX:G1NewSizePercent=20 -XX:G1ReservePercent=20";
     }
 }
-
+ 
 static bool parse_maven_name(const std::string& lib_name, std::string& group_path,
                              std::string& artifact, std::string& lib_version,
                              std::string& classifier) {
@@ -70,7 +70,7 @@ static bool parse_maven_name(const std::string& lib_name, std::string& group_pat
     }
     parts.push_back(lib_name.substr(start));
     if (parts.size() < 3) return false;
-
+ 
     group_path = parts[0];
     std::replace(group_path.begin(), group_path.end(), '.', '/');
     artifact = parts[1];
@@ -78,14 +78,14 @@ static bool parse_maven_name(const std::string& lib_name, std::string& group_pat
     classifier = (parts.size() > 3) ? parts[3] : "";
     return true;
 }
-
+ 
 static bool library_allowed(const json& lib) {
     if (!lib.contains("rules") || !lib["rules"].is_array()) return true;
-
+ 
     bool allowed = false;
     for (const auto& rule : lib["rules"]) {
         if (!rule.contains("action")) continue;
-
+ 
         bool os_match = true;
         if (rule.contains("os") && rule["os"].contains("name")) {
 #if defined(_WIN32)
@@ -103,12 +103,12 @@ static bool library_allowed(const json& lib) {
     }
     return allowed;
 }
-
+ 
 static int query_java_major_version(const fs::path& java_path) {
 #ifndef _WIN32
     int pipefd[2];
     if (pipe(pipefd) != 0) return -1;
-
+ 
     pid_t pid = fork();
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
     if (pid == 0) {
@@ -120,17 +120,17 @@ static int query_java_major_version(const fs::path& java_path) {
         _exit(127);
     }
     close(pipefd[1]);
-
+ 
     std::string out;
     char buf[512];
     ssize_t n;
     while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) out.append(buf, (size_t)n);
     close(pipefd[0]);
-
+ 
     int status = 0;
     waitpid(pid, &status, 0);
-
-
+ 
+ 
     size_t p = out.find("version \"");
     if (p == std::string::npos) return -1;
     p += 9;
@@ -138,7 +138,7 @@ static int query_java_major_version(const fs::path& java_path) {
     while (p < out.size() && (std::isdigit((unsigned char)out[p]) || out[p] == '.' || out[p] == '_'))
         v += out[p++];
     if (v.empty()) return -1;
-
+ 
     try {
         if (v.size() >= 2 && v[0] == '1' && v[1] == '.') {
             size_t dot = v.find('.', 2);
@@ -154,7 +154,7 @@ static int query_java_major_version(const fs::path& java_path) {
     return -1;
 #endif
 }
-
+ 
 static std::string sanitize_username(const std::string& in) {
     std::string out;
     size_t i = 0;
@@ -172,7 +172,7 @@ static std::string sanitize_username(const std::string& in) {
     if (out.empty()) out = "Player";
     return out;
 }
-
+ 
 // MD5 (RFC 1321) — используется для детерминированного офлайн-UUID по схеме
 // ванильного лаунчера: MD5("OfflinePlayer:" + ник), как это делает сервер.
 namespace {
@@ -181,9 +181,9 @@ struct Md5 {
     uint64_t len = 0;
     uint8_t buf[64];
     size_t buf_len = 0;
-
+ 
     static uint32_t rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
-
+ 
     void process(const uint8_t* p) {
         static const uint32_t K[64] = {
             0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
@@ -218,7 +218,7 @@ struct Md5 {
         }
         a += A; b += B; c += C; d += D;
     }
-
+ 
     void update(const void* data, size_t n) {
         const uint8_t* p = static_cast<const uint8_t*>(data);
         len += n;
@@ -229,7 +229,7 @@ struct Md5 {
             if (buf_len == 64) { process(buf); buf_len = 0; }
         }
     }
-
+ 
     void final(uint8_t out[16]) {
         uint64_t bits = len * 8;
         uint8_t pad = 0x80;
@@ -249,7 +249,7 @@ struct Md5 {
     }
 };
 } // namespace
-
+ 
 static std::string offline_uuid(const std::string& nick) {
     // Схема ванильного сервера: UUID.nameUUIDFromBytes("OfflinePlayer:" + nick)
     // = MD5-дайджест, version 3, IETF-вариант. Совпадает с UUID, который
@@ -271,9 +271,9 @@ static std::string offline_uuid(const std::string& nick) {
         digest[12], digest[13], digest[14], digest[15]);
     return buf;
 }
-
+ 
 #ifdef _WIN32
-
+ 
 static std::wstring utf8_to_wide(const std::string& s) {
     if (s.empty()) return L"";
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
@@ -313,7 +313,7 @@ static std::wstring win_quote_arg(const std::wstring& arg) {
     return out;
 }
 #endif
-
+ 
 static int run_java(const fs::path& java_path, const std::vector<std::string>& args,
                     bool close_on_launch = false) {
 #ifdef _WIN32
@@ -333,9 +333,9 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
     }
     CloseHandle(pi.hThread);
     if (close_on_launch) {
-        // Даём процессу до 3 секунд: если он сразу упал — возвращаем код ошибки,
+        // Даём процессу до 500ms: если он сразу упал — возвращаем код ошибки,
         // иначе считаем запуск успешным и запоминаем PID.
-        DWORD wait = WaitForSingleObject(pi.hProcess, 3000);
+        DWORD wait = WaitForSingleObject(pi.hProcess, 500);
         if (wait == WAIT_OBJECT_0) {
             DWORD code = 0;
             GetExitCodeProcess(pi.hProcess, &code);
@@ -356,12 +356,12 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
     return static_cast<int>(code);
 #else
     const std::string java_str = java_path.string();
-
+ 
     std::vector<char*> argv;
     argv.push_back(const_cast<char*>(java_str.c_str()));
     for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
-
+ 
     pid_t pid = fork();
     if (pid < 0) {
         std::cerr << "ERROR: fork() не удался\n";
@@ -372,11 +372,9 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
         std::cerr << "ERROR: не удалось запустить " << java_str << "\n";
         _exit(127);
     }
-
+ 
     if (close_on_launch) {
-
-
-        for (int i = 0; i < 30; ++i) {
+        for (int i = 0; i < 5; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             int st = 0;
             pid_t r = waitpid(pid, &st, WNOHANG);
@@ -386,7 +384,7 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
                 return -1;
             }
         }
-
+ 
         {
             std::error_code ec;
             fs::create_directories(launcher_paths::launcher_dir(), ec);
@@ -395,7 +393,7 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
         }
         return 0;
     }
-
+ 
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) return -1;
     if (WIFEXITED(status)) return WEXITSTATUS(status);
@@ -403,17 +401,17 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
     return -1;
 #endif
 }
-
+ 
 bool JavaLauncher::launch(const std::string& nickname_raw,
                           const std::string& version,
                           int memory_mb) {
-
+ 
     const std::string nickname = sanitize_username(nickname_raw);
-
+ 
     fs::path minecraft_dir = launcher_paths::minecraft_dir();
     fs::path versions_dir = minecraft_dir / "versions";
     fs::path version_dir = versions_dir / version;
-
+ 
     JavaManager javaManager;
     std::string java_path;
     try {
@@ -423,10 +421,10 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         return false;
     }
     std::cout << "✓ Java: " << java_path << "\n";
-
+ 
     int javaVersion = query_java_major_version(fs::path(java_path));
     if (javaVersion <= 0) {
-
+ 
         javaVersion = 17;
         if (java_path.find("java8") != std::string::npos) javaVersion = 8;
         else if (java_path.find("java17") != std::string::npos) javaVersion = 17;
@@ -435,15 +433,15 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
                   << javaVersion << "\n";
     }
     std::cout << "✓ Java version: " << javaVersion << "\n";
-
+ 
     bool isFabric = (version.find("fabric-loader-") == 0);
-
-
+ 
+ 
     json profile;
     std::string mainClass = "net.minecraft.client.main.Main";
     std::string assetIndex = "legacy";
     std::string mcVersion = version;
-
+ 
     fs::path profile_json = version_dir / (version + ".json");
     if (fs::exists(profile_json)) {
         std::ifstream file(profile_json);
@@ -458,8 +456,8 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
                     assetIndex = profile["assetIndex"]["id"].get<std::string>();
                     std::cout << "✓ AssetIndex from profile: " << assetIndex << "\n";
                 }
-
-
+ 
+ 
                 if (isFabric) {
                     if (profile.contains("inheritsFrom")) {
                         mcVersion = profile["inheritsFrom"].get<std::string>();
@@ -477,7 +475,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     } else {
         std::cerr << "WARNING: profile.json не найден, используем fallback\n";
     }
-
+ 
     {
         std::string inherit = mcVersion;
         if (assetIndex == "legacy" && !inherit.empty()) {
@@ -499,16 +497,16 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
             }
         }
     }
-
+ 
     if (isFabric) {
         mainClass = "net.fabricmc.loader.impl.launch.knot.KnotClient";
         std::cout << "✓ Fabric main class forced: " << mainClass << "\n";
     }
-
+ 
     fs::path vanilla_dir = versions_dir / mcVersion;
-
-
-
+ 
+ 
+ 
     auto find_library = [&](const std::string& group_path, const std::string& artifact,
                             const std::string& lib_version, const std::string& classifier) -> fs::path {
         std::string jar_name = artifact + "-" + lib_version + (classifier.empty() ? "" : "-" + classifier) + ".jar";
@@ -520,22 +518,22 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         if (fs::exists(lib_path)) return lib_path;
         return {};
     };
-
-
-
+ 
+ 
+ 
     std::vector<std::string> classpath_entries;
     std::vector<std::string> missing_libs;
-
+ 
     auto add_libraries_from = [&](const json& prof) {
         if (prof.is_null() || !prof.contains("libraries")) return;
         for (const auto& lib : prof["libraries"]) {
             if (!lib.contains("name")) continue;
             if (!library_allowed(lib)) continue;
-
+ 
             std::string lib_name = lib["name"].get<std::string>();
             std::string group_path, artifact, lib_version, classifier;
             if (!parse_maven_name(lib_name, group_path, artifact, lib_version, classifier)) continue;
-
+ 
             fs::path lib_path = find_library(group_path, artifact, lib_version, classifier);
             if (!lib_path.empty()) {
                 classpath_entries.push_back(lib_path.string());
@@ -550,13 +548,13 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
             }
         }
     };
-
-
+ 
+ 
     if (isFabric) {
-
+ 
         add_libraries_from(profile);
-
-
+ 
+ 
         bool has_loader = false, has_mixin = false, has_asm = false, has_intermediary = false;
         if (!profile.is_null() && profile.contains("libraries")) {
             for (const auto& lib : profile["libraries"]) {
@@ -576,8 +574,8 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
             if (!has_intermediary) std::cerr << "  - net.fabricmc:intermediary\n";
             return false;
         }
-
-
+ 
+ 
         fs::path vanilla_json_path = vanilla_dir / (mcVersion + ".json");
         if (fs::exists(vanilla_json_path)) {
             std::ifstream v_file(vanilla_json_path);
@@ -597,26 +595,26 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
             return false;
         }
     } else {
-
+ 
         add_libraries_from(profile);
     }
-
-
+ 
+ 
     fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
     if (!fs::exists(main_jar)) {
         std::cerr << "ERROR: Ванильный JAR не найден: " << main_jar << "\n";
         return false;
     }
     classpath_entries.push_back(main_jar.string());
-
-
+ 
+ 
     if (!missing_libs.empty()) {
         std::cerr << "ERROR: Запуск прерван: " << missing_libs.size()
                   << " библиотек отсутствует на диске (скачайте их через лаунчер).\n";
         return false;
     }
-
-
+ 
+ 
     std::vector<std::string> unique_entries;
     for (const auto& entry : classpath_entries) {
         if (std::find(unique_entries.begin(), unique_entries.end(), entry) == unique_entries.end()) {
@@ -624,36 +622,36 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         }
     }
     classpath_entries = std::move(unique_entries);
-
+ 
     std::string classpath;
     for (const auto& entry : classpath_entries) {
         if (!classpath.empty()) classpath += CLASSPATH_SEP;
         classpath += entry;
     }
-
+ 
     fs::path natives_dir = version_dir / "natives";
     if (!fs::exists(natives_dir)) {
         fs::create_directories(natives_dir);
     }
-
-
+ 
+ 
     std::vector<std::string> jvm_args;
     jvm_args.push_back("-Xmx" + std::to_string(memory_mb) + "M");
     jvm_args.push_back("-Xms" + std::to_string(memory_mb) + "M");
-
+ 
     {
         std::istringstream flags(getOptimizationFlags(javaVersion));
         std::string f;
         while (flags >> f) jvm_args.push_back(f);
     }
     jvm_args.push_back("-Djava.library.path=" + natives_dir.string());
-
-
+ 
+ 
     jvm_args.push_back("-Dminecraft.launcher.brand=minecraft-launcher");
     jvm_args.push_back("-Dminecraft.launcher.version=3.0");
     jvm_args.push_back("-Dfile.encoding=UTF-8");
-
-
+ 
+ 
     {
         fs::path mods_dir = version_dir / "mods";
         if (fs::exists(mods_dir) && !fs::is_empty(mods_dir)) {
@@ -661,8 +659,8 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
             std::cout << "✓ Папка модов подключена: " << mods_dir << "\n";
         }
     }
-
-
+ 
+ 
     std::vector<std::string> game_args;
     game_args.push_back("--username");
     game_args.push_back(nickname);
@@ -689,12 +687,12 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     game_args.push_back("--versionType");
     game_args.push_back("release");
     game_args.push_back("--fullScreen");
-
-
+ 
+ 
     std::vector<std::string> exec_args;
     fs::path argfile = version_dir / "java-args.argfile";
     bool use_argfile = (javaVersion >= 9);
-
+ 
     if (use_argfile) {
         std::ofstream af(argfile);
         if (!af.is_open()) {
@@ -715,7 +713,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     }
     exec_args.push_back(mainClass);
     for (const auto& a : game_args) exec_args.push_back(a);
-
+ 
     std::cout << "\n";
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "🎮 ЗАПУСК MINECRAFT\n";
@@ -728,18 +726,18 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     std::cout << "MainClass: " << mainClass << "\n";
     std::cout << "Jar в classpath: " << classpath_entries.size() << "\n";
     std::cout << "═══════════════════════════════════════════\n\n";
-
+ 
     if (std::getenv("LAUNCHER_DEBUG") != nullptr) {
         std::cout << "Command:";
         std::cout << " " << java_path;
         for (const auto& a : exec_args) std::cout << " \"" << a << "\"";
         std::cout << "\n\n";
     }
-
-
-
+ 
+ 
+ 
     int ret = run_java(fs::path(java_path), exec_args, true);
-
+ 
     if (ret == 0) {
         std::cout << "✓ Игра завершила работу успешно!\n";
         return true;
@@ -748,11 +746,11 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         return false;
     }
 }
-
+ 
 void JavaLauncher::open_url(const std::string& url) {
     std::cout << "Открываем: " << url << "\n";
 #ifdef _WIN32
-
+ 
     std::wstring wurl = utf8_to_wide(url);
     HINSTANCE r = ShellExecuteW(nullptr, L"open", wurl.c_str(),
                                 nullptr, nullptr, SW_SHOWNORMAL);
