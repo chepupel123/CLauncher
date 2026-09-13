@@ -30,9 +30,9 @@ Safe game launch. The game starts through execv on Linux and CreateProcessW on W
 
 SUPPORTED VERSIONS
 
-Vanilla: every official release in the Mojang manifest, including the 26.x line.
+Vanilla and Fabric: every 1.x release in the Mojang manifest, through the 1.21.x line (Fabric from 1.14.x onward).
 
-Fabric: versions from 1.14.x to 1.21.x. Fabric support for the 26.x line is intentionally not included: Mojang moved the modding toolchain to Java 25 and a new Loom, which breaks the current loader ecosystem. Vanilla for 26.x works fully.
+The 26.x line and anything newer are intentionally not supported: they require Java 25 and a new modding toolchain, target substantially newer hardware than this launcher is designed for, and are still fresh and unstable. For 26.x please use the official launcher. Support may be added once the line and its modding ecosystem stabilize.
 
 System requirements: Linux Mint 21+, Ubuntu 22.04+, Debian 12+, or Windows 10 and 11. OpenGL 3.0 or newer. The prebuilt AppImage needs glibc 2.35 or newer; on older systems build from source.
 
@@ -130,7 +130,7 @@ The launcher generates a deterministic offline identifier from the nickname usin
 
 KNOWN LIMITATIONS
 
-Fabric for the 26.x line is not supported, because Mojang moved the modding toolchain to Java 25 and a new Loom. Vanilla for 26.x works fully.
+The 26.x line is not supported at all (Vanilla included): it requires Java 25, targets newer hardware than this launcher aims at, and is still unstable. Choose 1.21.x or older.
 
 Your antivirus may ask for permission on the first Windows launch: the launcher calls PowerShell to unpack Java.
 
