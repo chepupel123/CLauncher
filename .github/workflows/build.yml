@@ -32,6 +32,7 @@ jobs:
             mingw-w64-x86_64-curl
             mingw-w64-x86_64-glfw
             mingw-w64-x86_64-nlohmann-json
+            mingw-w64-x86_64-ca-certificates
 
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -41,14 +42,43 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p release
-          cp build/CLauncher.exe release/CLauncher-beta.exe
+          # glfw3.dll и libcurl-4.dll (с транзитивными зависимостями) линкуются
+          # динамически — без них exe не стартует на чистой системе, поэтому
+          # кладём все /mingw64 DLL рядом с бинарём.
+          mkdir -p release/CLauncher-Windows-x64
+          cp build/CLauncher.exe release/CLauncher-Windows-x64/CLauncher-beta.exe
+          cd release/CLauncher-Windows-x64
+          # Транзитивное замыкание зависимостей: ldd на exe покрывает не всё
+          # (libcurl тянет openssl/zlib/zstd/brotli/nghttp2...), поэтому
+          # догоняем зависимости скопированных DLL итерациями.
+          changed=1
+          while [ "$changed" = "1" ]; do
+            changed=0
+            for bin in CLauncher-beta.exe *.dll; do
+              [ -f "$bin" ] || continue
+              for dep in $(ldd "$bin" 2>/dev/null | grep '/mingw64/bin/' | awk '{print $3}'); do
+                if [ ! -f "$(basename "$dep")" ]; then
+                  cp "$dep" . && changed=1
+                fi
+              done
+            done
+          done
+          # Корневые TLS-сертификаты: MinGW-libcurl на OpenSSL вне MSYS2 не
+          # находит CA-хранилище, и тогда любой HTTPS падает. exe ищет
+          # cacert.pem рядом с собой (см. main.cpp, SSL_CERT_FILE).
+          cert=$(find /mingw64 -maxdepth 4 \( -name 'cert.pem' -o -name 'ca-bundle.crt' \) 2>/dev/null | head -1)
+          [ -n "$cert" ] && cp "$cert" cacert.pem
+          echo "Bundled files:" && ls -la
+
+      - name: Create zip
+        shell: pwsh
+        run: Compress-Archive -Path release/CLauncher-Windows-x64 -DestinationPath release/CLauncher-Windows-x64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: CLauncher-Windows-x64
-          path: release/CLauncher-beta.exe
+          path: release/CLauncher-Windows-x64.zip
 
   # ================= LINUX APPIMAGE =================
   build-appimage:
@@ -97,14 +127,20 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"   # обход FUSE на раннере GitHub
         run: |
-          export OUTPUT="CLauncher-x86_64.AppImage"
+          mkdir -p release/CLauncher-Linux
+          export OUTPUT="release/CLauncher-Linux/CLauncher-x86_64.AppImage"
           ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
             --desktop-file AppDir/usr/share/applications/clauncher.desktop \
             --output appimage
 
+      - name: Create zip
+        run: |
+          cd release
+          zip -r -q CLauncher-Linux.zip CLauncher-Linux
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CLauncher-Linux-AppImage
-          path: CLauncher-x86_64.AppImage
+          name: CLauncher-Linux
+          path: release/CLauncher-Linux.zip
