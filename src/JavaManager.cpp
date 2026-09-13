@@ -11,6 +11,7 @@
 #include <chrono>
 #include <thread>
 #include <iomanip>
+#include <curl/curl.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -38,6 +39,45 @@ static std::string execCommandFirstLine(const std::string& cmd)
     }
     pclose(pipe);
     return result;
+}
+
+// Загрузка файла встроенным libcurl — не зависим от системного curl
+// (на Windows это снимает требование к наличию curl.exe в PATH).
+static size_t http_write_cb(void* ptr, size_t size, size_t nmemb, FILE* file)
+{
+    return fwrite(ptr, size, nmemb, file);
+}
+
+static bool http_download_file(const std::string& url, const fs::path& path)
+{
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+
+#ifdef _WIN32
+    FILE* file = _wfopen(path.c_str(), L"wb");
+#else
+    FILE* file = fopen(path.c_str(), "wb");
+#endif
+    if (!file) return false;
+
+    CURL* curl = curl_easy_init();
+    bool ok = false;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Minecraft-Launcher/1.0");
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, http_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
+        ok = (curl_easy_perform(curl) == CURLE_OK);
+        curl_easy_cleanup(curl);
+    }
+    fclose(file);
+    if (!ok) fs::remove(path, ec);
+    return ok;
 }
 
 void JavaManager::log(const std::string& message, bool isError)
@@ -240,9 +280,13 @@ fs::path JavaManager::getJavaBinary(JavaVersion version) const
 void JavaManager::checkDependencies()
 {
 #ifdef _WIN32
-    std::string testCmd = "powershell -NoProfile -Command \"exit\"";
-    if (std::system(testCmd.c_str()) != 0) {
-        throw std::runtime_error("PowerShell is not available. Please install PowerShell 5.0+.");
+    // tar.exe (bsdtar) встроен в Windows 10 1803+ и нужен для распаковки JRE
+    // и нативных библиотек (jar = zip). PowerShell остаётся лишь запасным
+    // вариантом распаковки Java.
+    if (std::system("tar --version >NUL 2>&1") != 0) {
+        throw std::runtime_error(
+            "tar.exe not found. Windows 10 1803 or newer is required "
+            "(or install 7-Zip / bsdtar manually).");
     }
 #else
     if (std::system("command -v curl >/dev/null 2>&1") != 0) {
@@ -250,6 +294,12 @@ void JavaManager::checkDependencies()
     }
     if (std::system("command -v tar >/dev/null 2>&1") != 0) {
         throw std::runtime_error("tar is not installed. Please install tar.");
+    }
+    // unzip нужен MinecraftInstaller для распаковки нативных LWJGL-библиотек.
+    if (std::system("command -v unzip >/dev/null 2>&1") != 0) {
+        throw std::runtime_error(
+            "unzip is not installed (needed to extract Minecraft native libraries). "
+            "Please install unzip, e.g.: sudo apt-get install unzip");
     }
 #endif
 }
@@ -476,13 +526,9 @@ void JavaManager::downloadJava(JavaVersion version)
     for (int attempt = 1; attempt <= MAX_RETRIES; ++attempt) {
         log("Download attempt " + std::to_string(attempt) + " of " + std::to_string(MAX_RETRIES));
 
-        std::string cmd = "curl -L --progress-bar --fail --connect-timeout 30 --max-time 600 " +
-                          shellQuote(url) + " -o " + shellQuote(archivePath.string());
+        bool downloaded = http_download_file(url, archivePath);
 
-        int result = std::system(cmd.c_str());
-
-
-        if (result == 0 && fileExists(archivePath)) {
+        if (downloaded && fileExists(archivePath)) {
             uintmax_t size = fs::file_size(archivePath);
             if (size > 0) {
                 log("Download complete: " + std::to_string(size / (1024*1024)) + " MB");
@@ -524,15 +570,25 @@ void JavaManager::extractJava(JavaVersion version, const fs::path& archivePath)
 
     std::string cmd;
 #ifdef _WIN32
-    cmd = "powershell -NoProfile -Command \"$ProgressPreference='SilentlyContinue'; "
-          "Expand-Archive -Path " + shellQuote(archivePath.string()) +
-          " -DestinationPath " + shellQuote(javaDir.string()) + " -Force\"";
+    // Основной путь — встроенный в Windows 10 1803+ bsdtar (умеет zip).
+    // PowerShell Expand-Archive остаётся запасным вариантом на старых системах.
+    cmd = "tar -xf " + shellQuote(archivePath.string()) +
+          " -C " + shellQuote(javaDir.string());
+    int result = std::system(cmd.c_str());
+    if (result != 0) {
+        log("tar extraction failed (code " + std::to_string(result) +
+            "), falling back to PowerShell Expand-Archive", true);
+        cmd = "powershell -NoProfile -Command \"$ProgressPreference='SilentlyContinue'; "
+              "Expand-Archive -Path " + shellQuote(archivePath.string()) +
+              " -DestinationPath " + shellQuote(javaDir.string()) + " -Force\"";
+        result = std::system(cmd.c_str());
+    }
 #else
     cmd = "tar -xzf " + shellQuote(archivePath.string()) +
           " -C " + shellQuote(javaDir.string()) + " --strip-components=1";
+    int result = std::system(cmd.c_str());
 #endif
 
-    int result = std::system(cmd.c_str());
     if (result != 0) {
         fs::remove_all(javaDir, ec);
         throw std::runtime_error("Extraction failed (exit code " + std::to_string(result) + ")");
