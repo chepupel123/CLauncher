@@ -3,9 +3,7 @@ project(CLauncher CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-# Не задаём -O2/-march=native глобально: оптимизацию выбирает
-# CMAKE_BUILD_TYPE=Release, а -march=native привязывает бинарник к конкретному CPU
-# и ломает переносимость собранного лаунчера.
+
 
 # ========== FIND PACKAGES ==========
 find_package(glfw3 REQUIRED)
@@ -74,10 +72,10 @@ if(WIN32)
         Threads::Threads
         shell32 user32 gdi32 advapi32
     )
-    # Статическая линковка рантайма GCC, чтобы .exe не требовал рядом
-    # libstdc++-6.dll, libgcc_s_seh-1.dll и libwinpthread-1.dll.
-    # Требует, чтобы в MSYS2 были установлены СТАТИЧЕСКИЕ версии glfw/curl
-    # (они идут в комплекте с пакетами mingw-w64-*-glfw и mingw-w64-*-curl).
+    # Рантайм GCC линкуется статически (libstdc++-6.dll, libgcc_s_seh-1.dll и
+    # libwinpthread-1.dll оказываются внутри exe). А вот glfw3.dll и libcurl-4.dll
+    # остаются динамическими: CI (build.yml) кладёт их и транзитивные mingw-DLL
+    # рядом с exe в CLauncher-Windows-x64.zip, иначе программа не стартует.
     target_link_options(CLauncher PRIVATE -static-libgcc -static-libstdc++ -static)
 else()
     target_link_libraries(CLauncher PRIVATE
