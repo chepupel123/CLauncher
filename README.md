@@ -40,11 +40,9 @@ DOWNLOAD
 
 Ready-to-use builds are available on the Releases page:
 
-CLauncher-linux-x64.tar.gz — Linux (stable, Ubuntu/Debian family, needs the dependencies below).
+CLauncher-Linux.zip — Linux x86_64. Contains the self-contained CLauncher-x86_64.AppImage: everything is bundled, no extra packages needed (requires glibc 2.35+; unzip, make executable, run).
 
-CLauncher-x86_64.AppImage — Linux (any distribution with glibc 2.35+; download, make executable, run).
-
-CLauncher-beta.exe — Windows 10/11 (beta, not yet tested on a real Windows system).
+CLauncher-Windows-x64.zip — Windows 10/11 x64 (beta, not yet tested on a real Windows system). Contains CLauncher-beta.exe; unzip and run it.
 
 If you prefer to build from source, follow the steps below.
 
