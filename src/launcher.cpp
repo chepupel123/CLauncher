@@ -1,4 +1,3 @@
-
 #include "launcher.h"
 #include "version_manager.h"
 #include "java_launcher.h"
@@ -30,14 +29,6 @@ using json = nlohmann::json;
  
 static const int RAM_OPTIONS[] = {512, 1024, 2048, 3072, 4096};
 static const int RAM_OPTIONS_COUNT = 5;
- 
-static int mcMajor(const std::string& id) {
-    long major = 0;
-    size_t pos = 0;
-    while (pos < id.size() && std::isdigit(static_cast<unsigned char>(id[pos])))
-        major = major * 10 + (id[pos++] - '0');
-    return (pos == 0) ? 0 : static_cast<int>(major);
-}
  
 static bool nickname_char_ok(unsigned int c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -76,16 +67,11 @@ static const L10n& l10n_en() {
              "Mods require the Fabric loader (select it above)",
          "Vanilla Minecraft cannot load mods.\n"
                                  "Switch Mod Loader to Fabric to enable mods.",
-             "Fabric is not supported for 26.x (Vanilla works)",
-         "Mojang changed the client architecture in 26.x\n"
-                         "and Fabric support was intentionally cut for this line.\n"
-                         "Use a 1.21.x or older version for mods.",
               "My Mods",
           "Mods folder for this Fabric version.\n"
                          "Drop your .jar files here — they load on launch.\n"
                          "Each Minecraft version has its own folder — no mod conflicts.",
          "Fabric for %s is not installed yet — press Play first",
-           "Fabric is not supported for %s — use 1.21.x or older for mods",
          "Resource Packs",
                  "Shared resource packs folder (~/.minecraft/resourcepacks).\n"
                            "Download a resource pack .zip and put it here —\n"
@@ -125,16 +111,11 @@ static const L10n& l10n_ru() {
              "Моды требуют загрузчик Fabric (выберите выше)",
          "Ванильный Minecraft не умеет загружать моды.\n"
                                  "Переключите Mod Loader на Fabric.",
-             "Fabric не поддерживается для 26.x (Vanilla работает)",
-         "Mojang изменили архитектуру клиента в 26.x,\n"
-                         "и поддержка Fabric для этой линейки сознательно вырезана.\n"
-                         "Для модов используйте версию 1.21.x или старше.",
               "Мои моды",
           "Папка модов этой Fabric-версии.\n"
                          "Кидайте сюда свои .jar — они загрузятся при запуске.\n"
                          "У каждой версии своя папка — моды не конфликтуют.",
          "Fabric для %s ещё не установлена — сначала нажмите Play",
-           "Fabric не поддерживается для %s — используйте 1.21.x или старше",
          "Ресурспаки",
                  "Общая папка ресурспаков (~/.minecraft/resourcepacks).\n"
                            "Скачайте .zip ресурспака и положите сюда —\n"
@@ -457,11 +438,7 @@ void Launcher::draw_ui() {
  
  
  
-                if (mcMajor(config_.selected_version) >= 26) {
-                    std::cerr << "[My Mods] Fabric is intentionally not supported for "
-                              << config_.selected_version << " (26.x line)\n";
-                    set_status(sfmt(L.fabric_unsupported, config_.selected_version), 0.0f);
-                } else if (fabric_dir.empty()) {
+                if (fabric_dir.empty()) {
                     std::cerr << "[My Mods] Fabric is not installed for "
                               << config_.selected_version
                               << " — press Play (Fabric) first\n";
