@@ -13,6 +13,18 @@ using json = nlohmann::json;
 
 static constexpr long MANIFEST_TTL_SECONDS = 3600;
 
+static bool is_supported_release(const std::string& id) {
+    long major = 0;
+    size_t i = 0;
+    bool has_digit = false;
+    while (i < id.size() && id[i] >= '0' && id[i] <= '9') {
+        major = major * 10 + (id[i] - '0');
+        ++i;
+        has_digit = true;
+    }
+    return has_digit && major == 1;
+}
+
 size_t write_callback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
@@ -151,7 +163,8 @@ std::vector<VersionManager::Version> VersionManager::parse_manifest() {
 std::vector<std::string> VersionManager::get_release_versions() {
     std::vector<std::string> release_versions;
     for (const auto& v : parse_manifest())
-        if (v.type == "release") release_versions.push_back(v.id);
+        if (v.type == "release" && is_supported_release(v.id))
+            release_versions.push_back(v.id);
 
     std::cout << "Found " << release_versions.size() << " release versions\n";
     return release_versions;
