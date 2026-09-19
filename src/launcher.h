@@ -31,7 +31,7 @@ public:
         std::string nickname = "Steve";
         std::string selected_version;
         int memory_mb = 1024;
-        std::string discord_url = "https://discord.gg/hnsabkQsS2";
+        std::string discord_url = "https://discord.gg/kazYTTErkT";
         ModLoader mod_loader = ModLoader::Vanilla;
     };
 
