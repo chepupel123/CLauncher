@@ -42,6 +42,8 @@ set(SOURCES
     src/java_launcher.cpp
     src/MinecraftInstaller.cpp
     src/JavaManager.cpp
+    src/logger.cpp
+    src/curl_tls.cpp
 )
 
 # ImGui sources (if vendored)
@@ -110,4 +112,26 @@ if(NOT WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Release")
     add_custom_command(TARGET CLauncher POST_BUILD
         COMMAND ${CMAKE_STRIP} $<TARGET_FILE:CLauncher>
     )
+endif()
+
+# ========== TLS CAs НА WINDOWS ==========
+# Скрипт упаковки CI (build.yml) ищет ca-certificates в MSYS2 и копирует
+# cacert.pem рядом с exe. Здесь продублируем это на уровне CMake: если
+# файл cacert.pem присутствует рядом с исходниками — положим его рядом
+# с бинарником при сборке (в т.ч. в локальных сборках вне CI).
+if(WIN32)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/cacert.pem")
+        add_custom_command(TARGET CLauncher POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/cacert.pem"
+                "$<TARGET_FILE_DIR:CLauncher>/cacert.pem"
+            COMMENT "Copying cacert.pem next to CLauncher.exe"
+        )
+    else()
+        message(WARNING
+            "cacert.pem not found next to CMakeLists.txt. "
+            "On Windows, libcurl (MinGW/OpenSSL) cannot find system CAs: "
+            "either place cacert.pem next to the .exe, or use a libcurl build "
+            "with Schannel (CURLSSLOPT_NATIVE_CA). CI does this automatically.")
+    endif()
 endif()
