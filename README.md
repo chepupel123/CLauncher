@@ -1,3 +1,5 @@
+🇬🇧 English | 🇷🇺 [Русский](README_RU.md) | 🇰🇿 [Қазақша](README_KZ.md)
+
 # CLauncher
 
 A lightweight native Minecraft launcher for Linux and Windows, written in C++20 with a Dear ImGui interface and OpenGL. Designed and built by a single developer for older hardware: no ads, no telemetry, no store, no account required for offline play.
