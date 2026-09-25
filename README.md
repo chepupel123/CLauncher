@@ -3,7 +3,7 @@
 A lightweight native Minecraft launcher for Linux and Windows, written in C++20 with a Dear ImGui interface and OpenGL. Designed and built by a single developer for older hardware: no ads, no telemetry, no store, no account required for offline play.
 
 <p align="center">
-  <img src="screenshots/interface_en.png" alt="CLauncher Interface (Vanilla)" width="700"/>
+  <img src="screenshots/interface_en_vanilla.png" alt="CLauncher Interface (Vanilla)" width="700"/>
 </p>
 
 Requires OpenGL 3.0 or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 10/11. The binary is about three megabytes, and the launcher itself idles at roughly 30 to 50 MB of RAM (Minecraft's own memory is configured separately in the UI). The reference development machine is a 2012 desktop computer, used as a practical old-hardware baseline rather than a guarantee for every possible system configuration.
@@ -15,7 +15,7 @@ Requires OpenGL 3.0 or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 1
 * **Performance mods** with one checkbox: Sodium, Lithium and FerriteCore. Mod versions are matched automatically to the selected Minecraft version through the Modrinth API.
 
 <p align="center">
-  <img src="screenshots/interface_en1.png" alt="CLauncher Interface (Fabric)" width="700"/>
+  <img src="screenshots/interface_en_fabric.png" alt="CLauncher Interface (Fabric)" width="700"/>
 </p>
 
 * **Your own mods.** The My Mods button opens the mods folder for the selected Fabric version. Any jar file you drop there is loaded at game startup. Each Minecraft version has its own mods folder, so mods from different versions never get mixed together.
