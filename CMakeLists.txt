@@ -3,11 +3,12 @@ project(CLauncher CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-# Не задаём -O2/-march=native глобально: оптимизацию выбирает
-# CMAKE_BUILD_TYPE=Release, а -march=native привязывает бинарник к конкретному CPU
-# и ломает переносимость собранного лаунчера.
 
+# Don't force -O2/-march=native globally: optimization is chosen by
+# CMAKE_BUILD_TYPE=Release, and -march=native pins the binary to a specific CPU
+# and breaks portability of the built launcher.
 # ========== FIND PACKAGES ==========
+
 find_package(glfw3 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(CURL REQUIRED)
@@ -30,7 +31,6 @@ else()
     set(IMGUI_DIR "${IMGUI_INCLUDEDIR}")
     set(IMGUI_INCLUDE_DIRS ${IMGUI_INCLUDE_DIRS} "${IMGUI_DIR}/backends")
 endif()
-
 include_directories(${IMGUI_INCLUDE_DIRS})
 
 # ========== SOURCE FILES ==========
@@ -61,8 +61,8 @@ endif()
 # ========== BUILD EXECUTABLE ==========
 add_executable(CLauncher ${SOURCES})
 
-# Иконка .exe (Windows): вшиваем clauncher.ico через ресурс-файл.
-# windres обрабатывает .rc автоматически, когда файл добавлен в исходники.
+# .exe icon (Windows): embed clauncher.ico via resource file.
+# windres processes .rc automatically when file is added to sources.
 if(WIN32)
     target_sources(CLauncher PRIVATE clauncher.rc)
 endif()
@@ -76,11 +76,15 @@ if(WIN32)
         Threads::Threads
         shell32 user32 gdi32 advapi32
     )
-    # Рантайм GCC линкуется статически (libstdc++-6.dll, libgcc_s_seh-1.dll и
-    # libwinpthread-1.dll оказываются внутри exe). А вот glfw3.dll и libcurl-4.dll
-    # остаются динамическими: CI (build.yml) кладёт их и транзитивные mingw-DLL
-    # рядом с exe в CLauncher-Windows-x64.zip, иначе программа не стартует.
-    target_link_options(CLauncher PRIVATE -static-libgcc -static-libstdc++ -static)
+
+    # Statically link ONLY the GCC/MinGW runtime (libstdc++-6.dll, libgcc_s_seh-1.dll,
+    # libwinpthread-1.dll end up inside the exe). glfw3.dll and libcurl-4.dll
+    # remain DYNAMIC: CI (build.yml) copies them and transitive mingw-DLLs
+    # next to the exe in CLauncher-Windows-x64.zip, otherwise the program won't start.
+    target_link_options(CLauncher PRIVATE
+        -static-libgcc
+        -static-libstdc++
+    )
 else()
     target_link_libraries(CLauncher PRIVATE
         glfw
@@ -90,35 +94,11 @@ else()
     )
 endif()
 
-if(nlohmann_json_FOUND)
-    target_link_libraries(CLauncher PRIVATE nlohmann_json::nlohmann_json)
-endif()
-
-if(IMGUI_FOUND)
-    target_link_libraries(CLauncher PRIVATE ${IMGUI_LIBRARIES})
-endif()
-
-# ========== INCLUDE DIRECTORIES ==========
-target_include_directories(CLauncher PRIVATE 
-    src/
-    ${IMGUI_INCLUDE_DIRS}
-)
-
-# ========== INSTALL (для AppImage и упаковки) ==========
-install(TARGETS CLauncher RUNTIME DESTINATION bin)
-
-# ========== POST BUILD ==========
-if(NOT WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Release")
-    add_custom_command(TARGET CLauncher POST_BUILD
-        COMMAND ${CMAKE_STRIP} $<TARGET_FILE:CLauncher>
-    )
-endif()
-
-# ========== TLS CAs НА WINDOWS ==========
-# Скрипт упаковки CI (build.yml) ищет ca-certificates в MSYS2 и копирует
-# cacert.pem рядом с exe. Здесь продублируем это на уровне CMake: если
-# файл cacert.pem присутствует рядом с исходниками — положим его рядом
-# с бинарником при сборке (в т.ч. в локальных сборках вне CI).
+# ========== TLS CAs ON WINDOWS ==========
+# CI packaging script (build.yml) finds ca-certificates in MSYS2 and copies
+# cacert.pem next to the exe. Here we duplicate that at CMake level: if
+# cacert.pem is present next to the sources — put it next to the binary
+# at build time (including local builds outside CI).
 if(WIN32)
     if(EXISTS "${CMAKE_SOURCE_DIR}/cacert.pem")
         add_custom_command(TARGET CLauncher POST_BUILD
@@ -132,6 +112,7 @@ if(WIN32)
             "cacert.pem not found next to CMakeLists.txt. "
             "On Windows, libcurl (MinGW/OpenSSL) cannot find system CAs: "
             "either place cacert.pem next to the .exe, or use a libcurl build "
-            "with Schannel (CURLSSLOPT_NATIVE_CA). CI does this automatically.")
+            "with Schannel (CURLSSLOPT_NATIVE_CA). CI does this automatically."
+        )
     endif()
 endif()
