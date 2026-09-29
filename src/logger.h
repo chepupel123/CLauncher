@@ -1,6 +1,71 @@
 #pragma once
 
 #include <string>
+#include <sstream>
+
+// Lightweight thread-safe logger for CLauncher.
+// Writes to clauncher.log (next to .exe, or in launcher data dir,
+// or in cwd — whichever is writable). On Windows uses _wfopen to
+// handle non-ASCII usernames. On Linux uses std::ofstream.
+//
+// Format: [2026-09-20 21:09:12.123] [INFO ] message
+// Levels: DEBUG, INFO, WARN, ERROR.
+//
+// Usage:
+//     LOG_INFO("Manifest cached: " << path);
+//     LOG_ERROR("Curl failed: " << curl_easy_strerror(res));
+
+namespace logger {
+
+enum class Level { Debug, Info, Warn, Error };
+
+// Call once at the very beginning of main().
+void init(const char* argv0);
+
+// Write one line (thread-safe).
+void write(Level level, const std::string& message);
+
+// Global minimum level threshold.
+void  set_min_level(Level level);
+Level min_level();
+
+// Path helpers (for "Open log" button in UI).
+std::string log_file_path();
+std::string log_directory();
+
+} // namespace logger
+
+// ---- Macros ----
+
+#define LOG_DEBUG(msg)                                                   \
+    do {                                                                 \
+        std::ostringstream _log_ss_;                                     \
+        _log_ss_ << msg;                                                 \
+        ::logger::write(::logger::Level::Debug, _log_ss_.str());         \
+    } while (0)
+
+#define LOG_INFO(msg)                                                    \
+    do {                                                                 \
+        std::ostringstream _log_ss_;                                     \
+        _log_ss_ << msg;                                                 \
+        ::logger::write(::logger::Level::Info, _log_ss_.str());          \
+    } while (0)
+
+#define LOG_WARN(msg)                                                    \
+    do {                                                                 \
+        std::ostringstream _log_ss_;                                     \
+        _log_ss_ << msg;                                                 \
+        ::logger::write(::logger::Level::Warn, _log_ss_.str());          \
+    } while (0)
+
+#define LOG_ERROR(msg)                                                   \
+    do {                                                                 \
+        std::ostringstream _log_ss_;                                     \
+        _log_ss_ << msg;                                                 \
+        ::logger::write(::logger::Level::Error, _log_ss_.str());         \
+    } while (0)#pragma once
+
+#include <string>
 
 // Lightweight thread-safe logger for CLauncher.
 //
