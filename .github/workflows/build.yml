@@ -4,7 +4,7 @@ on:
   workflow_dispatch:        # ручной запуск из вкладки Actions
   push:
     tags:
-      - 'v*'               # автоматически при создании тега v1.0.0 и т.п.
+      - 'v*'                # автоматически при создании тега v1.0.0 и т.п.
 
 jobs:
 
@@ -84,7 +84,6 @@ jobs:
   build-appimage:
     # ubuntu-22.04: быстрее и надёжнее раннера, чем 20.04.
     # AppImage будет требовать glibc 2.35+ (Ubuntu 22.04+, Debian 12+, Mint 21+).
-    # Для более старых систем есть сборка из исходников.
     runs-on: ubuntu-22.04
 
     steps:
@@ -106,16 +105,33 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Install into AppDir
-        run: DESTDIR="$(pwd)/AppDir" cmake --install build
+        run: |
+          DESTDIR="$(pwd)/AppDir" cmake --install build
+          # Fallback: если cmake --install по какой-то причине не положил
+          # бинарник в AppDir/usr/bin — копируем вручную.
+          mkdir -p AppDir/usr/bin
+          if [ ! -f AppDir/usr/bin/CLauncher ]; then
+            echo "CLauncher not installed by cmake --install, copying manually..."
+            cp build/CLauncher AppDir/usr/bin/CLauncher
+          fi
+          chmod +x AppDir/usr/bin/CLauncher
+          echo "=== AppDir/usr/bin/ ==="
+          ls -la AppDir/usr/bin/
 
       - name: Prepare AppDir metadata
         run: |
-          mkdir -p AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
           cp clauncher.desktop AppDir/usr/share/applications/clauncher.desktop
           if [ -f clauncher.png ]; then
             cp clauncher.png AppDir/usr/share/icons/hicolor/256x256/apps/clauncher.png
-            cp clauncher.png AppDir/clauncher.png
           fi
+          echo "=== .desktop file ==="
+          cat AppDir/usr/share/applications/clauncher.desktop
+          echo "=== Exec line ==="
+          grep '^Exec=' AppDir/usr/share/applications/clauncher.desktop
+          echo "=== AppDir tree ==="
+          find AppDir -type f -o -type l | sort
 
       - name: Download linuxdeploy
         run: |
@@ -129,9 +145,13 @@ jobs:
         run: |
           mkdir -p release/CLauncher-Linux
           export OUTPUT="release/CLauncher-Linux/CLauncher-x86_64.AppImage"
+          # --executable явно указывает linuxdeploy главный бинарник.
+          # Без него linuxdeploy парсит Exec= из .desktop и иногда не находит.
           ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
+            --executable AppDir/usr/bin/CLauncher \
             --desktop-file AppDir/usr/share/applications/clauncher.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/clauncher.png \
             --output appimage
 
       - name: Create zip
