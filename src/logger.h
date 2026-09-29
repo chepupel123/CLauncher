@@ -10,26 +10,17 @@
 //
 // Format: [2026-09-20 21:09:12.123] [INFO ] message
 // Levels: DEBUG, INFO, WARN, ERROR.
-//
-// Usage:
-//     LOG_INFO("Manifest cached: " << path);
-//     LOG_ERROR("Curl failed: " << curl_easy_strerror(res));
 
 namespace logger {
 
 enum class Level { Debug, Info, Warn, Error };
 
-// Call once at the very beginning of main().
 void init(const char* argv0);
-
-// Write one line (thread-safe).
 void write(Level level, const std::string& message);
 
-// Global minimum level threshold.
 void  set_min_level(Level level);
 Level min_level();
 
-// Path helpers (for "Open log" button in UI).
 std::string log_file_path();
 std::string log_directory();
 
@@ -63,7 +54,7 @@ std::string log_directory();
         std::ostringstream _log_ss_;                                     \
         _log_ss_ << msg;                                                 \
         ::logger::write(::logger::Level::Error, _log_ss_.str());         \
-    } while (0)#pragma once
+    } while (0)
 
 #include <string>
 
