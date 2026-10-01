@@ -31,6 +31,17 @@ using json = nlohmann::json;
  
 static const int RAM_OPTIONS[] = {512, 1024, 2048, 3072, 4096};
 static const int RAM_OPTIONS_COUNT = 5;
+
+static bool version_supports_fabric(const std::string& version) {
+    if (version.size() < 4 || version[0] != '1' || version[1] != '.') return false;
+    size_t pos = 2;
+    int minor = 0;
+    while (pos < version.size() && std::isdigit((unsigned char)version[pos])) {
+        minor = minor * 10 + (version[pos] - '0');
+        ++pos;
+    }
+    return minor >= 14;
+}
  
 static bool nickname_char_ok(unsigned int c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -181,7 +192,7 @@ static void installer_progress_cb(int percent, const char* stage, void* ) {
  
 Launcher::Launcher() {
     glfwSetErrorCallback([](int err, const char* desc) {
-        std::cerr << "GLFW Error " << err << ": " << desc << "\n";
+        LOG_ERROR("GLFW error " << err << ": " << desc);
     });
  
     if (!glfwInit()) {
@@ -204,7 +215,11 @@ Launcher::~Launcher() {
  
 void Launcher::init() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
  
     window_ = glfwCreateWindow(700, 550, "CLauncher", nullptr, nullptr);
@@ -270,18 +285,18 @@ void Launcher::setup_imgui() {
             font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr,
                                                 io.Fonts->GetGlyphRangesCyrillic());
             if (font) {
-                std::cout << "UI font: " << path << " (Latin + Cyrillic)\n";
+                LOG_INFO("UI font loaded: " << path);
                 break;
             }
         }
     }
     if (!font) {
         io.Fonts->AddFontDefault();
-        std::cerr << "WARNING: " << l10n_ru().font_warning << "\n";
+        LOG_WARN(l10n_ru().font_warning);
     }
  
     ImGui_ImplGlfw_InitForOpenGL(window_, true);
-    ImGui_ImplOpenGL3_Init("#version 130");
+    ImGui_ImplOpenGL3_Init("#version 330");
 }
  
 void Launcher::render() {
@@ -363,19 +378,19 @@ bool Launcher::load_settings() {
  
         std::string clean = sanitize_nickname(nick);
         if (clean != nick) {
-            std::cout << "Settings: nickname sanitized '" << nick
-                      << "' -> '" << clean << "'\n";
+            LOG_INFO("Settings: nickname sanitized '" << nick
+                     << "' -> '" << clean << "'");
             if (clean.empty()) clean = "Steve";
         }
         std::snprintf(nickname_buf_, sizeof(nickname_buf_), "%s", clean.c_str());
         memory_index_ = std::clamp(j.value("memory_index", 1), 0, RAM_OPTIONS_COUNT - 1);
         config_.memory_mb = RAM_OPTIONS[memory_index_];
-        std::cout << "Settings loaded: lang=" << j.value("lang", "en")
-                  << ", nickname=" << nickname_buf_ << "\n";
+        LOG_INFO("Settings loaded: lang=" << j.value("lang", "en")
+                 << ", nickname=" << nickname_buf_);
         if (clean != nick) save_settings();
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Settings load failed: " << e.what() << "\n";
+        LOG_ERROR("Settings load failed: " << e.what());
         return false;
     }
 }
@@ -424,7 +439,7 @@ void Launcher::save_settings() const {
         std::ofstream f(settings_path());
         f << j.dump(2);
     } catch (const std::exception& e) {
-        std::cerr << "Settings save failed: " << e.what() << "\n";
+        LOG_ERROR("Settings save failed: " << e.what());
     }
 }
  
@@ -512,15 +527,30 @@ void Launcher::draw_ui() {
     ImGui::Spacing();
  
     ImGui::Text("%s", L.mod_loader.c_str());
-    static const char* loader_names[] = { "Vanilla", "Fabric" };
-    int current_loader = static_cast<int>(config_.mod_loader);
-    if (ImGui::Combo("##loader_combo", &current_loader, loader_names, IM_ARRAYSIZE(loader_names))) {
-        config_.mod_loader = static_cast<ModLoader>(current_loader);
+
+    const bool fabric_ok = version_supports_fabric(config_.selected_version);
+    if (!fabric_ok && config_.mod_loader == ModLoader::Fabric) {
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+
+    if (fabric_ok) {
+        if (ImGui::BeginCombo("##loader_combo",
+                              config_.mod_loader == ModLoader::Fabric ? "Fabric" : "Vanilla")) {
+            if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla))
+                config_.mod_loader = ModLoader::Vanilla;
+            if (config_.mod_loader == ModLoader::Vanilla) ImGui::SetItemDefaultFocus();
+            if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric))
+                config_.mod_loader = ModLoader::Fabric;
+            if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
+            ImGui::EndCombo();
+        }
+    } else {
+        ImGui::Text("Vanilla");
     }
     ImGui::Spacing();
  
  
-    if (config_.mod_loader == ModLoader::Fabric) {
+    if (fabric_ok && config_.mod_loader == ModLoader::Fabric) {
         ImGui::Checkbox(L.perf_mods.c_str(), &perf_mods_checked_);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.perf_mods_tip.c_str());
     }
@@ -534,9 +564,8 @@ void Launcher::draw_ui() {
  
  
                 if (fabric_dir.empty()) {
-                    std::cerr << "[My Mods] Fabric is not installed for "
-                              << config_.selected_version
-                              << " — press Play (Fabric) first\n";
+                    LOG_WARN("[My Mods] Fabric is not installed for "
+                             << config_.selected_version);
                     set_status(sfmt(L.fabric_not_installed, config_.selected_version), 0.0f);
                 } else {
                     fs::path mods = launcher_paths::minecraft_dir()
@@ -548,7 +577,7 @@ void Launcher::draw_ui() {
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.my_mods_tip.c_str());
             ImGui::SameLine();
-        } else {
+        } else if (fabric_ok) {
             ImGui::TextDisabled("%s", L.mods_need_fabric.c_str());
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.mods_need_fabric_tip.c_str());
         }
@@ -613,8 +642,14 @@ void Launcher::draw_ui() {
  
 void Launcher::handle_play_button() {
     if (config_.selected_version.empty()) {
-        std::cerr << "Error: No version selected\n";
+        LOG_ERROR("No version selected");
         return;
+    }
+    if (config_.mod_loader == ModLoader::Fabric &&
+        !version_supports_fabric(config_.selected_version)) {
+        LOG_WARN("Fabric requested for unsupported Minecraft "
+                 << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
     }
     if (is_working) return;
     if (worker_.joinable()) worker_.join();
