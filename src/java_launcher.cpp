@@ -28,6 +28,7 @@
 #include <shellapi.h>
 #else
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <spawn.h>
 extern char** environ;
@@ -54,8 +55,9 @@ static std::string getOptimizationFlags(int javaVersion) {
                "-XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 "
                "-XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1";
     }
-    return "-XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:+UseStringDeduplication "
-           "-XX:G1NewSizePercent=20 -XX:G1ReservePercent=20";
+    // Java 8 rejects UseStringDeduplication / some G1*Percent flags
+    // ("Unrecognized VM option" → exit 1 in a few milliseconds).
+    return "-XX:+UseG1GC -XX:MaxGCPauseMillis=50";
 }
 
 static bool parse_maven_name(const std::string& lib_name, std::string& group_path,
@@ -360,6 +362,31 @@ static std::wstring win_quote_arg(const std::wstring& arg) {
 }
 #endif
 
+static fs::path game_log_path() {
+    return launcher_paths::launcher_dir() / "game.log";
+}
+
+static void log_game_output_tail() {
+    std::ifstream in(game_log_path());
+    if (!in) {
+        LOG_ERROR("game.log не найден: " << game_log_path().string());
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) lines.push_back(std::move(line));
+    }
+    if (lines.empty()) {
+        LOG_ERROR("game.log пуст: " << game_log_path().string());
+        return;
+    }
+    LOG_ERROR("Вывод игры (" << game_log_path().string() << "):");
+    size_t start = lines.size() > 40 ? lines.size() - 40 : 0;
+    for (size_t i = start; i < lines.size(); ++i)
+        LOG_ERROR("game: " << lines[i]);
+}
+
 static int run_java(const fs::path& java_path, const std::vector<std::string>& args,
                     bool close_on_launch = false) {
 #ifdef _WIN32
@@ -373,13 +400,30 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+    std::error_code ec;
+    fs::create_directories(launcher_paths::launcher_dir(), ec);
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE logf = CreateFileW(game_log_path().wstring().c_str(), GENERIC_WRITE,
+                              FILE_SHARE_READ, &sa, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (logf != INVALID_HANDLE_VALUE) {
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = logf;
+        si.hStdError = logf;
+    }
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr,
+                        logf != INVALID_HANDLE_VALUE,
                         CREATE_UNICODE_ENVIRONMENT,
                         nullptr, nullptr, &si, &pi)) {
         DWORD err = GetLastError();
         LOG_ERROR("CreateProcessW failed, GetLastError=" << err);
+        if (logf != INVALID_HANDLE_VALUE) CloseHandle(logf);
         return -1;
     }
+    if (logf != INVALID_HANDLE_VALUE) CloseHandle(logf);
     CloseHandle(pi.hThread);
     if (close_on_launch) {
         DWORD wait = WaitForSingleObject(pi.hProcess, 500);
@@ -415,6 +459,14 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
         return -1;
     }
     if (pid == 0) {
+        std::error_code ec;
+        fs::create_directories(launcher_paths::launcher_dir(), ec);
+        int fd = open(game_log_path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            if (fd > 2) close(fd);
+        }
         execv(java_str.c_str(), argv.data());
         _exit(127);
     }
@@ -663,7 +715,8 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
 
     std::vector<std::string> jvm_args;
     jvm_args.push_back("-Xmx" + std::to_string(memory_mb) + "M");
-    jvm_args.push_back("-Xms" + std::to_string(memory_mb) + "M");
+    // -Xms = -Xmx aborts Java instantly if the machine cannot commit that much.
+    jvm_args.push_back("-Xms" + std::to_string(std::min(memory_mb, 512)) + "M");
     {
         std::istringstream flags(getOptimizationFlags(javaVersion));
         std::string f;
@@ -695,7 +748,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     game_args.push_back("--assetIndex");  game_args.push_back(assetIndex);
     game_args.push_back("--userProperties"); game_args.push_back("{}");
     game_args.push_back("--versionType"); game_args.push_back("release");
-    game_args.push_back("--fullscreen");
+    game_args.push_back("--fullScreen");
 
     std::vector<std::string> exec_args;
     fs::path argfile = version_dir / "java-args.argfile";
@@ -736,22 +789,30 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         LOG_DEBUG("Command: " << cmdline);
     }
 
+    LOG_INFO("Game log: " << game_log_path().string());
     int ret = run_java(fs::path(java_path), exec_args,
                        /*close_on_launch=*/!wait_for_exit);
 
     if (ret == -1) {
         LOG_ERROR("Не удалось создать процесс Java");
+        log_game_output_tail();
         return false;
     }
     if (wait_for_exit) {
-        LOG_INFO("Процесс игры завершился с кодом " << ret);
-        return true;
+        if (ret == 0) {
+            LOG_INFO("Процесс игры завершился с кодом 0");
+            return true;
+        }
+        LOG_ERROR("Процесс игры завершился с кодом " << ret);
+        log_game_output_tail();
+        return false;
     }
     if (ret == 0) {
         LOG_INFO("Игра успешно запущена");
         return true;
     }
     LOG_ERROR("Игра упала сразу после старта (код " << ret << ")");
+    log_game_output_tail();
     return false;
 }
 
