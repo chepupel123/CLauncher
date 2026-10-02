@@ -44,6 +44,7 @@ set(SOURCES
     src/JavaManager.cpp
     src/logger.cpp
     src/curl_tls.cpp
+    src/single_instance.cpp
 )
 
 # ImGui sources (if vendored)
