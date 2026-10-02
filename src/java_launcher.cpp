@@ -1,771 +1,773 @@
-#include "launcher.h"
-#include "version_manager.h"
 #include "java_launcher.h"
-#include "MinecraftInstaller.h"
+#include "JavaManager.h"
 #include "paths.h"
-#include "curl_tls.h"
 #include "logger.h"
- 
-#include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_opengl3.h>
-#include <GLFW/glfw3.h>
-#include <GL/gl.h>
- 
-#include <nlohmann/json.hpp>
- 
-#include <algorithm>
-#include <cctype>
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <map>
-#include <stdexcept>
-#include <utility>
- 
-namespace fs = std::filesystem;
-using json = nlohmann::json;
- 
-static const int RAM_OPTIONS[] = {512, 1024, 2048, 3072, 4096};
-static const int RAM_OPTIONS_COUNT = 5;
 
-static bool version_supports_fabric(const std::string& version) {
-    if (version.size() < 4 || version[0] != '1' || version[1] != '.') return false;
-    size_t pos = 2;
-    int minor = 0;
-    while (pos < version.size() && std::isdigit((unsigned char)version[pos])) {
-        minor = minor * 10 + (version[pos] - '0');
-        ++pos;
+#include <cstdlib>
+#include <sstream>
+#include <iostream>
+#include <filesystem>
+#include <vector>
+#include <algorithm>
+#include <fstream>
+#include <string>
+#include <cstdint>
+#include <cstring>
+#include <cstdio>
+#include <cctype>
+#include <nlohmann/json.hpp>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#else
+#include <unistd.h>
+#include <sys/wait.h>
+#include <spawn.h>
+extern char** environ;
+#endif
+
+#include <chrono>
+#include <thread>
+
+using json = nlohmann::json;
+namespace fs = std::filesystem;
+
+#ifdef _WIN32
+static const char CLASSPATH_SEP = ';';
+#else
+static const char CLASSPATH_SEP = ':';
+#endif
+
+static std::string getOptimizationFlags(int javaVersion) {
+    if (javaVersion >= 17) {
+        return "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=20 "
+               "-XX:+UnlockExperimentalVMOptions -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 "
+               "-XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=32m -XX:G1ReservePercent=20 "
+               "-XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 "
+               "-XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 "
+               "-XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1";
     }
-    return minor >= 14;
+    return "-XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:+UseStringDeduplication "
+           "-XX:G1NewSizePercent=20 -XX:G1ReservePercent=20";
 }
- 
-static bool nickname_char_ok(unsigned int c) {
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-           (c >= '0' && c <= '9') || c == '_';
+
+static bool parse_maven_name(const std::string& lib_name, std::string& group_path,
+                             std::string& artifact, std::string& lib_version,
+                             std::string& classifier) {
+    std::vector<std::string> parts;
+    size_t start = 0, end = 0;
+    while ((end = lib_name.find(':', start)) != std::string::npos) {
+        parts.push_back(lib_name.substr(start, end - start));
+        start = end + 1;
+    }
+    parts.push_back(lib_name.substr(start));
+    if (parts.size() < 3) return false;
+
+    group_path = parts[0];
+    std::replace(group_path.begin(), group_path.end(), '.', '/');
+    artifact = parts[1];
+    lib_version = parts[2];
+    classifier = (parts.size() > 3) ? parts[3] : "";
+    return true;
 }
- 
-static std::string sanitize_nickname(const std::string& in) {
+
+static bool library_allowed(const json& lib) {
+    if (!lib.contains("rules") || !lib["rules"].is_array()) return true;
+
+    bool allowed = false;
+    for (const auto& rule : lib["rules"]) {
+        if (!rule.contains("action")) continue;
+
+        bool os_match = true;
+        if (rule.contains("os") && rule["os"].contains("name")) {
+#if defined(_WIN32)
+            const std::string current_os = "windows";
+#elif defined(__APPLE__)
+            const std::string current_os = "osx";
+#else
+            const std::string current_os = "linux";
+#endif
+            os_match = (rule["os"]["name"].get<std::string>() == current_os);
+        }
+        if (os_match) {
+            allowed = (rule["action"].get<std::string>() == "allow");
+        }
+    }
+    return allowed;
+}
+
+#ifndef _WIN32
+static int query_java_major_version(const fs::path& java_path) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return -1;
+
+    pid_t pid = fork();
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+        execl(java_path.c_str(), java_path.c_str(), "-version", (char*)nullptr);
+        _exit(127);
+    }
+    close(pipefd[1]);
+
+    std::string out;
+    char buf[512];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) out.append(buf, (size_t)n);
+    close(pipefd[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    size_t p = out.find("version \"");
+    if (p == std::string::npos) return -1;
+    p += 9;
+    std::string v;
+    while (p < out.size() && (std::isdigit((unsigned char)out[p]) || out[p] == '.' || out[p] == '_'))
+        v += out[p++];
+    if (v.empty()) return -1;
+
+    try {
+        if (v.size() >= 2 && v[0] == '1' && v[1] == '.') {
+            size_t dot = v.find('.', 2);
+            return dot == std::string::npos ? 8 : std::stoi(v.substr(2, dot - 2));
+        }
+        size_t dot = v.find('.');
+        return std::stoi(dot == std::string::npos ? v : v.substr(0, dot));
+    } catch (...) {
+        return -1;
+    }
+}
+#else
+static int query_java_major_version_win(const fs::path& java_path) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE hRead = nullptr, hWrite = nullptr;
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1;
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+    std::wstring cmd = L"\"" + java_path.wstring() + L"\" -version 2>&1";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = hWrite;
+    si.hStdError  = hWrite;
+    si.hStdInput  = nullptr;
+
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(hRead);
+        CloseHandle(hWrite);
+        return -1;
+    }
+    CloseHandle(hWrite);
+
+    std::string out;
+    char buf[512];
+    DWORD n = 0;
+    while (ReadFile(hRead, buf, sizeof(buf), &n, nullptr) && n > 0) {
+        out.append(buf, n);
+    }
+    CloseHandle(hRead);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    size_t p = out.find("version \"");
+    if (p == std::string::npos) return -1;
+    p += 9;
+    std::string v;
+    while (p < out.size() && (std::isdigit((unsigned char)out[p]) || out[p] == '.' || out[p] == '_'))
+        v += out[p++];
+    if (v.empty()) return -1;
+
+    try {
+        if (v.size() >= 2 && v[0] == '1' && v[1] == '.') {
+            size_t dot = v.find('.', 2);
+            return dot == std::string::npos ? 8 : std::stoi(v.substr(2, dot - 2));
+        }
+        size_t dot = v.find('.');
+        return std::stoi(dot == std::string::npos ? v : v.substr(0, dot));
+    } catch (...) {
+        return -1;
+    }
+}
+
+static int query_java_major_version(const fs::path& java_path) {
+    return query_java_major_version_win(java_path);
+}
+#endif
+
+static std::string sanitize_username(const std::string& in) {
     std::string out;
     size_t i = 0;
     while (i < in.size()) {
         unsigned char b = static_cast<unsigned char>(in[i]);
         size_t len = (b < 0x80) ? 1 : (b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4;
-        if (b < 0x80 && nickname_char_ok(b)) out += in[i];
+        if (b < 0x80) {
+            char c = static_cast<char>(b);
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '_')
+                out += c;
+        }
         i += len;
     }
+    if (out.empty()) out = "Player";
     return out;
 }
- 
-static std::string sfmt(const std::string& tmpl, const std::string& arg) {
-    auto p = tmpl.find("%s");
-    if (p == std::string::npos) return tmpl;
-    return tmpl.substr(0, p) + arg + tmpl.substr(p + 2);
-}
- 
-static const L10n& l10n_en() {
-    static const L10n L{
-                "CLauncher",
-             "Language",
-             "Nickname",
-              "Version",
-           "Mod Loader:",
-            "Performance mods: Sodium + Lithium + FerriteCore",
-        "Sodium — render FPS, Lithium — game logic/ticks,\n"
-                         "FerriteCore — memory usage.\n"
-                         "Versions are picked automatically for the selected Minecraft version.",
-             "Mods require the Fabric loader (select it above)",
-         "Vanilla Minecraft cannot load mods.\n"
-                                 "Switch Mod Loader to Fabric to enable mods.",
-              "My Mods",
-          "Mods folder for this Fabric version.\n"
-                         "Drop your .jar files here — they load on launch.\n"
-                         "Each Minecraft version has its own folder — no mod conflicts.",
-         "Fabric for %s is not installed yet — press Play first",
-         "Resource Packs",
-                 "Shared resource packs folder (~/.minecraft/resourcepacks).\n"
-                           "Download a resource pack .zip and put it here —\n"
-                           "it will appear in the in-game resource pack list.",
-          "Memory allocation:",
-         "Selected: %d MB",
-                  "Play",
-               "Report bug on Discord",
-                 "Ready",
-             "Preparing...",
-           "Installing Vanilla %s...",
-        "Installing Fabric for %s...",
-             "Fabric installed: %s",
-               "Installation failed! Check the terminal.",
-         "Installing Sodium / Lithium / FerriteCore...",
-                  "Mods failed (see terminal), launching without them",
-             "Launching %s...",
-         "Game launched!",
-         "Launch failed! Check the terminal.",
-          "TTF font not found - Russian UI would show question marks (staying English)",
-         "Invalid characters removed (A-Z, a-z, 0-9, _ only)",
-         "Failed to load versions. Check your internet connection.",
-         "The version list is empty. Click Reload to retry.\n"
-                          "If the problem persists, see clauncher.log.\n"
-                          "On Windows, make sure cacert.pem is next to the .exe.",
-         "Reload",
-         "Loading versions...",
-    };
-    return L;
-}
- 
-static const L10n& l10n_ru() {
-    static const L10n L{
-                "CЛаунчер",
-             "Язык",
-             "Никнейм",
-              "Версия",
-           "Загрузчик модов:",
-            "Оптимизация: Sodium + Lithium + FerriteCore",
-        "Sodium — FPS рендера, Lithium — игровая логика/тики,\n"
-                         "FerriteCore — потребление памяти.\n"
-                         "Версии подбираются автоматически под выбранную версию Minecraft.",
-             "Моды требуют загрузчик Fabric (выберите выше)",
-         "Ванильный Minecraft не умеет загружать моды.\n"
-                                 "Переключите Mod Loader на Fabric.",
-              "Мои моды",
-          "Папка модов этой Fabric-версии.\n"
-                         "Кидайте сюда свои .jar — они загрузятся при запуске.\n"
-                         "У каждой версии своя папка — моды не конфликтуют.",
-         "Fabric для %s ещё не установлена — сначала нажмите Play",
-         "Ресурспаки",
-                 "Общая папка ресурспаков (~/.minecraft/resourcepacks).\n"
-                           "Скачайте .zip ресурспака и положите сюда —\n"
-                           "он появится в списке в настройках игры.",
-          "Выделение памяти:",
-         "Выбрано: %d МБ",
-                  "Играть",
-               "Сообщить об ошибке в Discord",
-                 "Готов к запуску",
-             "Подготовка...",
-           "Установка Vanilla %s...",
-        "Установка Fabric для %s...",
-             "Fabric установлена: %s",
-               "Ошибка установки! Проверьте терминал.",
-         "Установка Sodium / Lithium / FerriteCore...",
-                  "Моды не установились (см. терминал), запускаю без них",
-             "Запуск %s...",
-         "Игра запущена!",
-         "Ошибка запуска! Проверьте терминал.",
-          "Не найден TTF-шрифт — русский интерфейс покажет вопросики (остаюсь на английском)",
-         "Убраны недопустимые символы (только A-Z, a-z, 0-9, _)",
-         "Не удалось загрузить список версий. Проверьте подключение к интернету.",
-         "Список версий пуст. Нажмите Reload, чтобы повторить.\n"
-                             "Если проблема повторяется — смотрите clauncher.log.\n"
-                             "На Windows убедитесь, что cacert.pem лежит рядом с .exe.",
-         "Обновить",
-         "Загрузка версий...",
-    };
-    return L;
-}
- 
-static Launcher* g_active_launcher = nullptr;
- 
-static const char* ru_stage(const char* stage) {
-    static const std::map<std::string, const char*> M = {
-        {"Version metadata...", "Метаданные версии..."},
-        {"Downloading client...", "Скачивание клиента..."},
-        {"Libraries", "Библиотеки"},
-        {"Assets", "Ассеты"},
-        {"Mods", "Моды"},
-        {"Natives...", "Нативные библиотеки..."},
-        {"Done", "Готово"},
-        {"Installing Fabric...", "Установка Fabric..."},
-        {"Fabric installed", "Fabric установлена"},
-    };
-    auto it = M.find(stage);
-    return it != M.end() ? it->second : stage;
-}
- 
-static void installer_progress_cb(int percent, const char* stage, void* ) {
-    if (!g_active_launcher) return;
-    const char* s = (g_active_launcher->ui_lang() == UiLang::Ru) ? ru_stage(stage) : stage;
-    g_active_launcher->set_status(s, percent / 100.0f);
-}
- 
-Launcher::Launcher() {
-    glfwSetErrorCallback([](int err, const char* desc) {
-        LOG_ERROR("GLFW error " << err << ": " << desc);
-    });
- 
-    if (!glfwInit()) {
-        throw std::runtime_error("GLFW init failed");
-    }
-}
- 
-Launcher::~Launcher() {
-    if (reload_thread_.joinable()) reload_thread_.join();
-    if (worker_.joinable()) worker_.join();
- 
-    if (window_) {
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-        glfwDestroyWindow(window_);
-    }
-    glfwTerminate();
-}
- 
-void Launcher::init() {
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-#endif
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
- 
-    window_ = glfwCreateWindow(700, 550, "CLauncher", nullptr, nullptr);
-    if (!window_) throw std::runtime_error("GLFW window creation failed");
- 
-    glfwMakeContextCurrent(window_);
-    glfwSwapInterval(1);
- 
-    setup_imgui();
-    load_settings();
- 
-    LOG_INFO("Initializing version manager...");
-    std::error_code ec;
-    fs::create_directories(launcher_paths::launcher_dir(), ec);
-    if (!VersionManager::fetch_and_cache_manifest()) {
-        LOG_WARN("Falling back to cached manifest");
-    }
-    release_versions_ = VersionManager::get_release_versions();
- 
-    if (!release_versions_.empty()) {
-        if (config_.selected_version.empty() ||
-            std::find(release_versions_.begin(), release_versions_.end(),
-                      config_.selected_version) == release_versions_.end()) {
-            config_.selected_version = release_versions_[0];
+
+namespace {
+struct Md5 {
+    uint32_t a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476;
+    uint64_t len = 0;
+    uint8_t buf[64];
+    size_t buf_len = 0;
+
+    static uint32_t rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
+
+    void process(const uint8_t* p) {
+        static const uint32_t K[64] = {
+            0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
+            0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,
+            0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,
+            0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,
+            0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,
+            0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,
+            0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,
+            0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391
+        };
+        static const int S[64] = {
+            7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+            5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
+            4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+            6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21
+        };
+        uint32_t M[16];
+        for (int i = 0; i < 16; ++i)
+            M[i] = (uint32_t)p[i*4] | ((uint32_t)p[i*4+1] << 8) |
+                   ((uint32_t)p[i*4+2] << 16) | ((uint32_t)p[i*4+3] << 24);
+        uint32_t A = a, B = b, C = c, D = d;
+        for (int i = 0; i < 64; ++i) {
+            uint32_t F; int g;
+            if (i < 16)      { F = (B & C) | (~B & D);       g = i; }
+            else if (i < 32) { F = (D & B) | (~D & C);       g = (5*i + 1) & 15; }
+            else if (i < 48) { F = B ^ C ^ D;                g = (3*i + 5) & 15; }
+            else             { F = C ^ (B | ~D);             g = (7*i) & 15; }
+            uint32_t tmp = D; D = C; C = B;
+            B = B + rotl(A + F + K[i] + M[g], S[i]);
+            A = tmp;
         }
-        if (version_supports_fabric(config_.selected_version)) {
-            config_.mod_loader = preferred_mod_loader_;
-        } else {
-            config_.mod_loader = ModLoader::Vanilla;
-        }
-    } else {
-        LOG_ERROR("No release versions found — UI will show a retry hint");
+        a += A; b += B; c += C; d += D;
     }
- 
-    config_.memory_mb = RAM_OPTIONS[memory_index_];
-    set_status(tr().ready, 0.0f);
+
+    void update(const void* data, size_t n) {
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        len += n;
+        while (n > 0) {
+            size_t take = std::min(n, size_t(64) - buf_len);
+            std::memcpy(buf + buf_len, p, take);
+            buf_len += take; p += take; n -= take;
+            if (buf_len == 64) { process(buf); buf_len = 0; }
+        }
+    }
+
+    void final(uint8_t out[16]) {
+        uint64_t bits = len * 8;
+        uint8_t pad = 0x80;
+        update(&pad, 1);
+        uint8_t z = 0;
+        while (buf_len != 56) update(&z, 1);
+        uint8_t lenb[8];
+        for (int i = 0; i < 8; ++i) lenb[i] = uint8_t(bits >> (8 * i));
+        update(lenb, 8);
+        for (int i = 0; i < 4; ++i) {
+            out[i]      = uint8_t(a >> (i * 8));
+            out[i + 4]  = uint8_t(b >> (i * 8));
+            out[i + 8]  = uint8_t(c >> (i * 8));
+            out[i + 12] = uint8_t(d >> (i * 8));
+        }
+    }
+};
+} // namespace
+
+static std::string offline_uuid(const std::string& nick) {
+    const std::string data = "OfflinePlayer:" + nick;
+    Md5 md5;
+    md5.update(data.data(), data.size());
+    uint8_t digest[16];
+    md5.final(digest);
+    digest[6] = (digest[6] & 0x0f) | 0x30;
+    digest[8] = (digest[8] & 0x3f) | 0x80;
+    char buf[37];
+    std::snprintf(buf, sizeof(buf),
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        digest[0], digest[1], digest[2], digest[3],
+        digest[4], digest[5], digest[6], digest[7],
+        digest[8], digest[9], digest[10], digest[11],
+        digest[12], digest[13], digest[14], digest[15]);
+    return buf;
 }
- 
-void Launcher::setup_imgui() {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
- 
-    ImGui::StyleColorsDark();
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowPadding = ImVec2(12, 12);
-    style.FramePadding = ImVec2(8, 6);
-    style.ItemSpacing = ImVec2(8, 8);
-    style.WindowRounding = 0.0f;
-    style.FrameRounding = 0.0f;
- 
- 
- 
- 
-    ImFont* font = nullptr;
-    static const char* kFontCandidates[] = {
+
 #ifdef _WIN32
-        "C:\\Windows\\Fonts\\segoeui.ttf",
-        "C:\\Windows\\Fonts\\arial.ttf",
-#else
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-#endif
-    };
-    for (const char* path : kFontCandidates) {
-        if (FILE* f = fopen(path, "rb")) {
-            fclose(f);
-            font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr,
-                                                io.Fonts->GetGlyphRangesCyrillic());
-            if (font) {
-                LOG_INFO("UI font loaded: " << path);
-                break;
-            }
-        }
-    }
-    if (!font) {
-        io.Fonts->AddFontDefault();
-        LOG_WARN(l10n_ru().font_warning);
-    }
- 
-    ImGui_ImplGlfw_InitForOpenGL(window_, true);
-    ImGui_ImplOpenGL3_Init("#version 330");
+static std::wstring utf8_to_wide(const std::string& s) {
+    if (s.empty()) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring w(n, 0);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
+    return w;
 }
- 
-void Launcher::render() {
-    glfwPollEvents();
-
-    if (hide_window_requested_.exchange(false)) {
-        glfwHideWindow(window_);
-    }
-    if (show_window_requested_.exchange(false)) {
-        glfwShowWindow(window_);
-        glfwFocusWindow(window_);
-    }
-
-    if (glfwWindowShouldClose(window_)) {
-        should_close_ = true;
-        return;
-    }
-
-    if (!glfwGetWindowAttrib(window_, GLFW_VISIBLE)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        return;
-    }
-
-    // Reload выполнился в фоновом потоке — забираем результат в главном.
-    if (reload_ready_.exchange(false)) {
-        std::vector<std::string> fetched;
-        bool failed = false;
-        {
-            std::lock_guard<std::mutex> lk(status_mutex_);
-            fetched = std::move(versions_pending_);
-            versions_pending_.clear();
-            failed = versions_reload_failed_.load();
-        }
-        if (failed) {
-            LOG_ERROR("Reload finished with no versions available");
+static std::string wide_to_utf8(const std::wstring& w) {
+    if (w.empty()) return "";
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
+                                nullptr, 0, nullptr, nullptr);
+    std::string s(n, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+static std::wstring win_quote_arg(const std::wstring& arg) {
+    if (arg.empty()) return L"\"\"";
+    if (arg.find_first_of(L" \t\n\v\"") == std::wstring::npos) return arg;
+    std::wstring out = L"\"";
+    for (size_t i = 0; i < arg.size(); ++i) {
+        size_t backslashes = 0;
+        while (i < arg.size() && arg[i] == L'\\') { ++i; ++backslashes; }
+        if (i == arg.size()) {
+            out.append(backslashes * 2, L'\\');
+            break;
+        } else if (arg[i] == L'"') {
+            out.append(backslashes * 2 + 1, L'\\');
+            out += L'"';
         } else {
-            release_versions_ = std::move(fetched);
-            if (!config_.selected_version.empty() &&
-                std::find(release_versions_.begin(), release_versions_.end(),
-                          config_.selected_version) == release_versions_.end() &&
-                !release_versions_.empty()) {
-                config_.selected_version = release_versions_[0];
-            }
-            LOG_INFO("Reload complete: " << release_versions_.size() << " versions");
+            out.append(backslashes, L'\\');
+            out += arg[i];
         }
-        set_status(tr().ready, 0.0f);
-        reload_requested_ = false;
+    }
+    out += L'"';
+    return out;
+}
+#endif
+
+static int run_java(const fs::path& java_path, const std::vector<std::string>& args,
+                    bool close_on_launch = false) {
+#ifdef _WIN32
+    std::wstring cmd = win_quote_arg(java_path.wstring());
+    for (const auto& a : args) {
+        cmd += L" ";
+        cmd += win_quote_arg(utf8_to_wide(a));
+    }
+    LOG_DEBUG("CreateProcessW cmd: " << wide_to_utf8(cmd));
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                        CREATE_UNICODE_ENVIRONMENT,
+                        nullptr, nullptr, &si, &pi)) {
+        DWORD err = GetLastError();
+        LOG_ERROR("CreateProcessW failed, GetLastError=" << err);
+        return -1;
+    }
+    CloseHandle(pi.hThread);
+    if (close_on_launch) {
+        DWORD wait = WaitForSingleObject(pi.hProcess, 500);
+        if (wait == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hProcess);
+            return static_cast<int>(code);
+        }
+        std::error_code ec;
+        fs::create_directories(launcher_paths::launcher_dir(), ec);
+        std::ofstream pidf(launcher_paths::launcher_dir() / "last_game.pid");
+        pidf << pi.dwProcessId << "\n";
+        CloseHandle(pi.hProcess);
+        return 0;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+#else
+    const std::string java_str = java_path.string();
+
+    std::vector<char*> argv;
+    argv.push_back(const_cast<char*>(java_str.c_str()));
+    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        LOG_ERROR("fork() failed");
+        return -1;
+    }
+    if (pid == 0) {
+        execv(java_str.c_str(), argv.data());
+        _exit(127);
     }
 
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
- 
-    draw_ui();
- 
-    ImGui::Render();
-    int display_w, display_h;
-    glfwGetFramebufferSize(window_, &display_w, &display_h);
-    glViewport(0, 0, display_w, display_h);
-    glClearColor(
-        ((clear_color_ >> 0) & 0xFF) / 255.f,
-        ((clear_color_ >> 8) & 0xFF) / 255.f,
-        ((clear_color_ >> 16) & 0xFF) / 255.f,
-        1.f
-    );
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    glfwSwapBuffers(window_);
-}
- 
-void Launcher::set_status(const std::string& text, float progress) {
-    std::lock_guard<std::mutex> lk(status_mutex_);
-    status_text = text;
-    this->progress = progress;
-}
- 
-const L10n& Launcher::tr() const {
-    return lang_ == UiLang::Ru ? l10n_ru() : l10n_en();
-}
- 
-static fs::path settings_path() {
-    return launcher_paths::launcher_dir() / "launcher_settings.json";
-}
- 
-bool Launcher::load_settings() {
-    try {
-        fs::path p = settings_path();
-        if (!fs::exists(p)) return false;
-        json j;
-        std::ifstream f(p);
-        f >> j;
- 
-        if (j.value("lang", "en") == "ru") lang_ = UiLang::Ru;
-        std::string nick = j.value("nickname", std::string("Steve"));
- 
- 
-        std::string clean = sanitize_nickname(nick);
-        if (clean != nick) {
-            LOG_INFO("Settings: nickname sanitized '" << nick
-                     << "' -> '" << clean << "'");
-            if (clean.empty()) clean = "Steve";
+    if (close_on_launch) {
+        for (int i = 0; i < 5; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            int st = 0;
+            pid_t r = waitpid(pid, &st, WNOHANG);
+            if (r == pid) {
+                if (WIFEXITED(st)) return WEXITSTATUS(st);
+                if (WIFSIGNALED(st)) return 128 + WTERMSIG(st);
+                return -1;
+            }
         }
-        std::snprintf(nickname_buf_, sizeof(nickname_buf_), "%s", clean.c_str());
-        memory_index_ = std::clamp(j.value("memory_index", 1), 0, RAM_OPTIONS_COUNT - 1);
-        config_.selected_version = j.value("selected_version", std::string());
-        if (j.value("mod_loader", 0) == 1) preferred_mod_loader_ = ModLoader::Fabric;
-        config_.memory_mb = RAM_OPTIONS[memory_index_];
-        LOG_INFO("Settings loaded: lang=" << j.value("lang", "en")
-                 << ", nickname=" << nickname_buf_);
-        if (clean != nick) save_settings();
-        return true;
+        {
+            std::error_code ec;
+            fs::create_directories(launcher_paths::launcher_dir(), ec);
+            std::ofstream pidf(launcher_paths::launcher_dir() / "last_game.pid");
+            pidf << pid << "\n";
+        }
+        return 0;
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+#endif
+}
+
+bool JavaLauncher::launch(const std::string& nickname_raw,
+                          const std::string& version,
+                          int memory_mb,
+                          bool wait_for_exit) {
+
+    const std::string nickname = sanitize_username(nickname_raw);
+
+    fs::path minecraft_dir = launcher_paths::minecraft_dir();
+    fs::path versions_dir  = minecraft_dir / "versions";
+    fs::path version_dir   = versions_dir / version;
+
+    JavaManager javaManager;
+    std::string java_path;
+    try {
+        java_path = javaManager.ensureJava(version).string();
     } catch (const std::exception& e) {
-        LOG_ERROR("Settings load failed: " << e.what());
+        LOG_ERROR("Не удалось получить Java: " << e.what());
         return false;
     }
-}
+    LOG_INFO("Java: " << java_path);
 
-void Launcher::reload_versions() {
-    // Кнопка Reload в UI. Чтобы не блокировать интерфейс, загрузка манифеста
-    // идёт в отдельном потоке, а забор результата — в render() (главный поток).
-    if (reload_requested_) return;  // уже выполняется
-    reload_requested_ = true;
-    reload_ready_ = false;
-    set_status(tr().loading_versions, 0.0f);
-    LOG_INFO("Manual manifest reload requested");
+    int javaVersion = query_java_major_version(fs::path(java_path));
+    if (javaVersion <= 0) {
+        javaVersion = 17;
+        if (java_path.find("java8")  != std::string::npos) javaVersion = 8;
+        else if (java_path.find("java17") != std::string::npos) javaVersion = 17;
+        else if (java_path.find("java21") != std::string::npos) javaVersion = 21;
+        LOG_WARN("Не удалось определить версию Java, эвристика: " << javaVersion);
+    }
+    LOG_INFO("Java version: " << javaVersion);
 
-    // Локализацию фиксируем до запуска потока, чтобы фоновый поток не читал
-    // lang_ (который может поменяться в главном потоке из переключателя языка).
-    const std::string ready_text = tr().ready;
+    bool isFabric = (version.find("fabric-loader-") == 0);
 
-    if (reload_thread_.joinable()) reload_thread_.join();
-    reload_thread_ = std::thread([this, ready_text] {
-        std::vector<std::string> fetched;
-        bool ok = false;
-        try {
-            // Принудительно обновляем кеш (без ожидания TTL).
-            ok = VersionManager::fetch_and_cache_manifest();
-            fetched = VersionManager::get_release_versions();
-        } catch (const std::exception& e) {
-            LOG_ERROR("Reload failed: " << e.what());
-        }
+    json profile;
+    std::string mainClass   = "net.minecraft.client.main.Main";
+    std::string assetIndex  = "legacy";
+    std::string mcVersion   = version;
 
-        {
-            std::lock_guard<std::mutex> lk(status_mutex_);
-            versions_pending_ = std::move(fetched);
-            versions_reload_failed_ = !ok || versions_pending_.empty();
-            reload_ready_ = true;   // render() заберёт результат
-        }
-        set_status(ready_text, 0.0f);
-    });
-}
- 
-void Launcher::save_settings() const {
-    try {
-        json j;
-        j["lang"] = (lang_ == UiLang::Ru) ? "ru" : "en";
-        j["nickname"] = std::string(nickname_buf_);
-        j["memory_index"] = memory_index_;
-        j["selected_version"] = config_.selected_version;
-        j["mod_loader"]       = static_cast<int>(preferred_mod_loader_);
-        fs::create_directories(settings_path().parent_path());
-        std::ofstream f(settings_path());
-        f << j.dump(2);
-    } catch (const std::exception& e) {
-        LOG_ERROR("Settings save failed: " << e.what());
-    }
-}
- 
-void Launcher::draw_ui() {
-    const L10n& L = tr();
- 
-    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize, ImGuiCond_FirstUseEver);
- 
-    ImGui::Begin("##launcher_main", nullptr,
-        ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoTitleBar);
- 
- 
-    ImGui::Text("%s", L.title.c_str());
-    ImGui::SameLine(ImGui::GetWindowWidth() - 190);
-    ImGui::SetNextItemWidth(170);
-    const char* langs[] = {"English", "Русский"};
-    int cur_lang = static_cast<int>(lang_);
-    if (ImGui::Combo("##lang", &cur_lang, langs, IM_ARRAYSIZE(langs))) {
-        lang_ = static_cast<UiLang>(cur_lang);
-        save_settings();
-        status_text = tr().ready;
-    }
-    ImGui::Separator();
- 
- 
- 
-    auto nick_filter = [](ImGuiInputTextCallbackData* data) -> int {
-        const unsigned char c = static_cast<unsigned char>(data->EventChar);
-        if (!nickname_char_ok(c)) return 1;
-        return 0;
-    };
-    ImGui::InputText("##nickname", nickname_buf_, sizeof(nickname_buf_),
-                     ImGuiInputTextFlags_CallbackCharFilter, nick_filter, nullptr);
-    if (ImGui::IsItemEdited()) {
-        std::string clean = sanitize_nickname(nickname_buf_);
-        if (clean != nickname_buf_) {
-            std::snprintf(nickname_buf_, sizeof(nickname_buf_), "%s", clean.c_str());
-            ++invalid_nick_drops_;
-        }
-    }
-    if (invalid_nick_drops_ > 0) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%d)", invalid_nick_drops_);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", (lang_ == UiLang::Ru
-                ? l10n_ru().invalid_nick_tip
-                : l10n_en().invalid_nick_tip).c_str());
-    }
-    ImGui::SameLine();
-    ImGui::Text("%s", L.nickname.c_str());
- 
-    if (!release_versions_.empty()) {
-        if (ImGui::BeginCombo("##version_combo", config_.selected_version.c_str())) {
-            for (const auto& ver : release_versions_) {
-                bool is_selected = (ver == config_.selected_version);
-                if (ImGui::Selectable(ver.c_str(), is_selected)) {
-                    config_.selected_version = ver;
-                    if (version_supports_fabric(ver)) {
-                        config_.mod_loader = preferred_mod_loader_;
+    fs::path profile_json = version_dir / (version + ".json");
+    if (fs::exists(profile_json)) {
+        std::ifstream file(profile_json);
+        if (file.is_open()) {
+            try {
+                file >> profile;
+                if (profile.contains("mainClass")) {
+                    mainClass = profile["mainClass"].get<std::string>();
+                    LOG_INFO("MainClass from profile: " << mainClass);
+                }
+                if (profile.contains("assetIndex") && profile["assetIndex"].contains("id")) {
+                    assetIndex = profile["assetIndex"]["id"].get<std::string>();
+                    LOG_INFO("AssetIndex from profile: " << assetIndex);
+                }
+                if (isFabric) {
+                    if (profile.contains("inheritsFrom")) {
+                        mcVersion = profile["inheritsFrom"].get<std::string>();
                     } else {
-                        config_.mod_loader = ModLoader::Vanilla;
+                        size_t lastDash = version.rfind('-');
+                        if (lastDash != std::string::npos) {
+                            mcVersion = version.substr(lastDash + 1);
+                        }
                     }
-                    save_settings();
                 }
-                if (is_selected) ImGui::SetItemDefaultFocus();
+            } catch (const std::exception& e) {
+                LOG_WARN("Ошибка парсинга profile.json: " << e.what());
             }
-            ImGui::EndCombo();
         }
     } else {
-        // Пустой список версий: красное предупреждение + кнопка Reload.
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.60f, 0.16f, 0.16f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 0.26f, 0.26f, 1.0f));
-        ImGui::Button(L.reload.c_str(), ImVec2(140, 0));
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemClicked()) {
-            reload_versions();
-        }
-        ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.32f, 0.32f, 1.0f));
-        ImGui::Text("%s", L.versions_failed.c_str());
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.versions_failed_tip.c_str());
-    }
-    ImGui::SameLine();
-    ImGui::Text("%s", L.version.c_str());
- 
-    ImGui::Spacing();
- 
-    ImGui::Text("%s", L.mod_loader.c_str());
-
-    const bool fabric_ok = version_supports_fabric(config_.selected_version);
-    if (!fabric_ok && config_.mod_loader == ModLoader::Fabric) {
-        config_.mod_loader = ModLoader::Vanilla;
+        LOG_WARN("profile.json не найден, используем fallback");
     }
 
-    if (fabric_ok) {
-        if (ImGui::BeginCombo("##loader_combo",
-                              config_.mod_loader == ModLoader::Fabric ? "Fabric" : "Vanilla")) {
-            if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla)) {
-                config_.mod_loader = ModLoader::Vanilla;
-                preferred_mod_loader_ = ModLoader::Vanilla;
-                save_settings();
-            }
-            if (config_.mod_loader == ModLoader::Vanilla) ImGui::SetItemDefaultFocus();
-            if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric)) {
-                config_.mod_loader = ModLoader::Fabric;
-                preferred_mod_loader_ = ModLoader::Fabric;
-                save_settings();
-            }
-            if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
-            ImGui::EndCombo();
-        }
-    } else {
-        ImGui::Text("Vanilla");
-    }
-    ImGui::Spacing();
- 
- 
-    if (fabric_ok && config_.mod_loader == ModLoader::Fabric) {
-        ImGui::Checkbox(L.perf_mods.c_str(), &perf_mods_checked_);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.perf_mods_tip.c_str());
-    }
- 
- 
-    if (!is_working) {
-        if (config_.mod_loader == ModLoader::Fabric) {
-            if (ImGui::Button(L.my_mods.c_str(), ImVec2(340, 0))) {
-                std::string fabric_dir = MinecraftInstaller::findFabricDir(config_.selected_version);
- 
- 
- 
-                if (fabric_dir.empty()) {
-                    LOG_WARN("[My Mods] Fabric is not installed for "
-                             << config_.selected_version);
-                    set_status(sfmt(L.fabric_not_installed, config_.selected_version), 0.0f);
-                } else {
-                    fs::path mods = launcher_paths::minecraft_dir()
-                                    / "versions" / fabric_dir / "mods";
-                    std::error_code ec;
-                    fs::create_directories(mods, ec);
-                    JavaLauncher::open_url(mods.string());
+    {
+        std::string inherit = mcVersion;
+        if (assetIndex == "legacy" && !inherit.empty()) {
+            fs::path vjson = versions_dir / inherit / (inherit + ".json");
+            if (fs::exists(vjson)) {
+                try {
+                    json vj;
+                    std::ifstream vf(vjson);
+                    vf >> vj;
+                    if (vj.contains("assetIndex") && vj["assetIndex"].contains("id")) {
+                        assetIndex = vj["assetIndex"]["id"].get<std::string>();
+                        LOG_INFO("AssetIndex inherited from " << inherit
+                                 << ": " << assetIndex);
+                    }
+                } catch (const std::exception& e) {
+                    LOG_WARN("Cannot read inheritsFrom assetIndex: " << e.what());
                 }
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.my_mods_tip.c_str());
-            ImGui::SameLine();
-        } else if (fabric_ok) {
-            ImGui::TextDisabled("%s", L.mods_need_fabric.c_str());
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.mods_need_fabric_tip.c_str());
         }
-        if (ImGui::Button(L.resource_packs.c_str(), ImVec2(-1, 0))) {
-            fs::path rp = launcher_paths::minecraft_dir() / "resourcepacks";
-            std::error_code ec;
-            fs::create_directories(rp, ec);
-            JavaLauncher::open_url(rp.string());
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.rp_tip.c_str());
     }
- 
-    ImGui::Text("%s", L.memory_alloc.c_str());
-    ImGui::RadioButton("512 MB##ram", &memory_index_, 0); ImGui::SameLine();
-    ImGui::RadioButton("1024 MB##ram", &memory_index_, 1); ImGui::SameLine();
-    ImGui::RadioButton("2048 MB##ram", &memory_index_, 2); ImGui::SameLine();
-    ImGui::RadioButton("3072 MB##ram", &memory_index_, 3); ImGui::SameLine();
-    ImGui::RadioButton("4096 MB##ram", &memory_index_, 4);
- 
-    config_.memory_mb = RAM_OPTIONS[memory_index_];
-    {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), L.selected_mb_fmt.c_str(), config_.memory_mb);
-        ImGui::Text("%s", buf);
+
+    if (isFabric) {
+        mainClass = "net.fabricmc.loader.impl.launch.knot.KnotClient";
+        LOG_INFO("Fabric main class forced: " << mainClass);
     }
- 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
- 
- 
-    {
-        std::string st;
-        float pr;
-        {
-            std::lock_guard<std::mutex> lk(status_mutex_);
-            st = status_text;
-            pr = progress;
-        }
-        if (is_working) {
-            ImGui::Text("%s", st.c_str());
-            ImGui::ProgressBar(pr, ImVec2(-1, 20));
-        } else {
-            if (!st.empty()) ImGui::TextDisabled("%s", st.c_str());
-            if (ImGui::Button(L.play.c_str(), ImVec2(-1, 40))) {
-                config_.nickname = nickname_buf_;
-                save_settings();
-                handle_play_button();
+
+    fs::path vanilla_dir = versions_dir / mcVersion;
+
+    auto find_library = [&](const std::string& group_path, const std::string& artifact,
+                            const std::string& lib_version, const std::string& classifier) -> fs::path {
+        std::string jar_name = artifact + "-" + lib_version +
+                               (classifier.empty() ? "" : "-" + classifier) + ".jar";
+        fs::path lib_path = version_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+        if (fs::exists(lib_path)) return lib_path;
+        lib_path = vanilla_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+        if (fs::exists(lib_path)) return lib_path;
+        lib_path = minecraft_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+        if (fs::exists(lib_path)) return lib_path;
+        return {};
+    };
+
+    std::vector<std::string> classpath_entries;
+    std::vector<std::string> missing_libs;
+
+    auto add_libraries_from = [&](const json& prof) {
+        if (prof.is_null() || !prof.contains("libraries")) return;
+        for (const auto& lib : prof["libraries"]) {
+            if (!lib.contains("name")) continue;
+            if (!library_allowed(lib)) continue;
+
+            std::string lib_name = lib["name"].get<std::string>();
+            std::string group_path, artifact, lib_version, classifier;
+            if (!parse_maven_name(lib_name, group_path, artifact, lib_version, classifier)) continue;
+
+            fs::path lib_path = find_library(group_path, artifact, lib_version, classifier);
+            if (!lib_path.empty()) {
+                classpath_entries.push_back(lib_path.string());
+            } else {
+                missing_libs.push_back(lib_name);
+                LOG_WARN("Библиотека не найдена: " << lib_name);
             }
         }
-    }
- 
-    ImGui::Spacing();
-    ImGui::Separator();
- 
-    if (ImGui::Button(L.discord.c_str(), ImVec2(-1, 0))) {
-        JavaLauncher::open_url(config_.discord_url);
-    }
- 
-    ImGui::End();
-}
- 
-void Launcher::handle_play_button() {
-    if (config_.selected_version.empty()) {
-        LOG_ERROR("No version selected");
-        return;
-    }
-    if (config_.mod_loader == ModLoader::Fabric &&
-        !version_supports_fabric(config_.selected_version)) {
-        LOG_WARN("Fabric requested for unsupported Minecraft "
-                 << config_.selected_version << " — falling back to Vanilla");
-        config_.mod_loader = ModLoader::Vanilla;
-    }
-    if (is_working) return;
-    if (worker_.joinable()) worker_.join();
+    };
 
-    save_settings();
-    is_working = true;
-    set_status(tr().preparing, 0.0f);
- 
- 
-    g_active_launcher = this;
-    MinecraftInstaller::set_progress_callback(&installer_progress_cb, nullptr);
- 
- 
-    Config cfg = config_;
-    bool install_mods = (config_.mod_loader == ModLoader::Fabric) && perf_mods_checked_;
-    const L10n* L = &tr();
- 
-    worker_ = std::thread([this, cfg, install_mods, L] { play_worker(cfg, install_mods, *L); });
-}
- 
-void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& L) {
-    const std::string mc_version = cfg.selected_version;
-    std::string launch_version = mc_version;
- 
-    bool install_ok = false;
- 
-    if (cfg.mod_loader == ModLoader::Vanilla) {
-        set_status(sfmt(L.installing_vanilla, mc_version), 0.05f);
-        install_ok = MinecraftInstaller::install(mc_version);
-        launch_version = mc_version;
-    } else {
-        set_status(sfmt(L.installing_fabric_for, mc_version), 0.05f);
-        std::string fabric_ver = MinecraftInstaller::installFabric(mc_version);
-        if (!fabric_ver.empty()) {
-            install_ok = true;
-            launch_version = fabric_ver;
-            set_status(sfmt(L.fabric_installed, launch_version), 0.40f);
+    if (isFabric) {
+        add_libraries_from(profile);
+
+        bool has_loader = false, has_mixin = false, has_asm = false, has_intermediary = false;
+        if (!profile.is_null() && profile.contains("libraries")) {
+            for (const auto& lib : profile["libraries"]) {
+                if (!lib.contains("name")) continue;
+                std::string n = lib["name"].get<std::string>();
+                if (n.find(":fabric-loader:") != std::string::npos) has_loader = true;
+                else if (n.find(":sponge-mixin:") != std::string::npos) has_mixin = true;
+                else if (n.find(":intermediary")  != std::string::npos) has_intermediary = true;
+                else if (n.find(":asm")           != std::string::npos) has_asm = true;
+            }
+        }
+        if (!has_loader || !has_mixin || !has_asm || !has_intermediary) {
+            LOG_ERROR("Не хватает критичных библиотек Fabric");
+            return false;
+        }
+
+        fs::path vanilla_json_path = vanilla_dir / (mcVersion + ".json");
+        if (fs::exists(vanilla_json_path)) {
+            std::ifstream v_file(vanilla_json_path);
+            json v_profile;
+            if (v_file.is_open()) {
+                try {
+                    v_file >> v_profile;
+                    add_libraries_from(v_profile);
+                    LOG_INFO("Ванильные библиотеки добавлены");
+                } catch (const std::exception& e) {
+                    LOG_ERROR("Ошибка парсинга ванильного JSON: " << e.what());
+                    return false;
+                }
+            }
         } else {
-            install_ok = false;
+            LOG_ERROR("Ванильный JSON не найден: " << vanilla_json_path.string());
+            return false;
         }
-    }
- 
-    if (!install_ok) {
-        set_status(L.install_failed, 0.0f);
-        is_working = false;
-        return;
-    }
- 
- 
-    if (install_mods) {
-        set_status(L.installing_perf_mods, 0.45f);
-        if (!MinecraftInstaller::installPerformanceMods(launch_version, mc_version)) {
-            set_status(L.mods_failed, 0.90f);
-        }
-    }
- 
-    set_status(sfmt(L.launching, launch_version), 0.95f);
-
-    hide_window_requested_ = true;
-
-    bool launched = JavaLauncher::launch(cfg.nickname, launch_version,
-                                         cfg.memory_mb, /*wait_for_exit=*/true);
-
-    show_window_requested_ = true;
-
-    if (launched) {
-        set_status(L.ready, 0.0f);
     } else {
-        set_status(L.launch_failed, 0.0f);
+        add_libraries_from(profile);
     }
-    is_working = false;
+
+    fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
+    if (!fs::exists(main_jar)) {
+        LOG_ERROR("Ванильный JAR не найден: " << main_jar.string());
+        return false;
+    }
+    classpath_entries.push_back(main_jar.string());
+
+    if (!missing_libs.empty()) {
+        LOG_ERROR("Запуск прерван: " << missing_libs.size()
+                  << " библиотек отсутствует");
+        return false;
+    }
+
+    std::vector<std::string> unique_entries;
+    for (const auto& entry : classpath_entries) {
+        if (std::find(unique_entries.begin(), unique_entries.end(), entry) == unique_entries.end()) {
+            unique_entries.push_back(entry);
+        }
+    }
+    classpath_entries = std::move(unique_entries);
+
+    std::string classpath;
+    for (const auto& entry : classpath_entries) {
+        if (!classpath.empty()) classpath += CLASSPATH_SEP;
+        classpath += entry;
+    }
+
+    fs::path natives_dir = version_dir / "natives";
+    if (!fs::exists(natives_dir)) {
+        std::error_code ec;
+        fs::create_directories(natives_dir, ec);
+    }
+
+    std::vector<std::string> jvm_args;
+    jvm_args.push_back("-Xmx" + std::to_string(memory_mb) + "M");
+    jvm_args.push_back("-Xms" + std::to_string(memory_mb) + "M");
+    {
+        std::istringstream flags(getOptimizationFlags(javaVersion));
+        std::string f;
+        while (flags >> f) jvm_args.push_back(f);
+    }
+    jvm_args.push_back("-Djava.library.path=" + natives_dir.string());
+    jvm_args.push_back("-Dminecraft.launcher.brand=minecraft-launcher");
+    jvm_args.push_back("-Dminecraft.launcher.version=3.0");
+    jvm_args.push_back("-Dfile.encoding=UTF-8");
+
+    {
+        fs::path mods_dir = version_dir / "mods";
+        if (fs::exists(mods_dir) && !fs::is_empty(mods_dir)) {
+            jvm_args.push_back("-Dfabric.addMods=" + mods_dir.string());
+            LOG_INFO("Папка модов подключена: " << mods_dir.string());
+        }
+    }
+
+    std::vector<std::string> game_args;
+    game_args.push_back("--username");    game_args.push_back(nickname);
+    game_args.push_back("--uuid");        game_args.push_back(offline_uuid(nickname));
+    game_args.push_back("--accessToken"); game_args.push_back("null");
+    game_args.push_back("--userType");    game_args.push_back("mojang");
+    game_args.push_back("--clientId");    game_args.push_back("0");
+    game_args.push_back("--xuid");        game_args.push_back("0");
+    game_args.push_back("--version");     game_args.push_back(version);
+    game_args.push_back("--gameDir");     game_args.push_back(minecraft_dir.string());
+    game_args.push_back("--assetsDir");   game_args.push_back((minecraft_dir / "assets").string());
+    game_args.push_back("--assetIndex");  game_args.push_back(assetIndex);
+    game_args.push_back("--userProperties"); game_args.push_back("{}");
+    game_args.push_back("--versionType"); game_args.push_back("release");
+    game_args.push_back("--fullScreen");
+
+    std::vector<std::string> exec_args;
+    fs::path argfile = version_dir / "java-args.argfile";
+    bool use_argfile = (javaVersion >= 9);
+
+    if (use_argfile) {
+        std::ofstream af(argfile);
+        if (!af.is_open()) {
+            LOG_ERROR("Не удалось создать argfile: " << argfile.string());
+            return false;
+        }
+        for (const auto& a : jvm_args) {
+            if (a.rfind("-D", 0) == 0) af << "\"" << a << "\"\n";
+            else af << a << "\n";
+        }
+        af << "-cp \"" << classpath << "\"\n";
+        af.close();
+        exec_args.push_back("@" + argfile.string());
+    } else {
+        for (const auto& a : jvm_args) exec_args.push_back(a);
+        exec_args.push_back("-cp");
+        exec_args.push_back(classpath);
+    }
+    exec_args.push_back(mainClass);
+    for (const auto& a : game_args) exec_args.push_back(a);
+
+    LOG_INFO("=== ЗАПУСК MINECRAFT ===");
+    LOG_INFO("Nick:       " << nickname);
+    LOG_INFO("Version:    " << version << (isFabric ? " (Fabric MC " + mcVersion + ")" : ""));
+    LOG_INFO("Memory:     " << memory_mb << " MB");
+    LOG_INFO("Java:       " << java_path << " (v" << javaVersion << ")");
+    LOG_INFO("MainClass:  " << mainClass);
+    LOG_INFO("Classpath:  " << classpath_entries.size() << " entries");
+
+    if (std::getenv("LAUNCHER_DEBUG") != nullptr) {
+        std::string cmdline = java_path;
+        for (const auto& a : exec_args) cmdline += " \"" + a + "\"";
+        LOG_DEBUG("Command: " << cmdline);
+    }
+
+    int ret = run_java(fs::path(java_path), exec_args,
+                       /*close_on_launch=*/!wait_for_exit);
+
+    if (ret == -1) {
+        LOG_ERROR("Не удалось создать процесс Java");
+        return false;
+    }
+    if (wait_for_exit) {
+        LOG_INFO("Процесс игры завершился с кодом " << ret);
+        return true;
+    }
+    if (ret == 0) {
+        LOG_INFO("Игра успешно запущена");
+        return true;
+    }
+    LOG_ERROR("Игра упала сразу после старта (код " << ret << ")");
+    return false;
 }
- 
-bool Launcher::should_close() const {
-    return should_close_;
+
+void JavaLauncher::open_url(const std::string& url) {
+    LOG_INFO("Opening URL: " << url);
+#ifdef _WIN32
+    std::wstring wurl = utf8_to_wide(url);
+    HINSTANCE r = ShellExecuteW(nullptr, L"open", wurl.c_str(),
+                                nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(r) > 32) {
+        LOG_INFO("URL opened");
+    } else {
+        LOG_ERROR("ShellExecuteW failed, code=" << reinterpret_cast<INT_PTR>(r));
+    }
+#else
+    pid_t pid = 0;
+    const char* argv[] = {"xdg-open", url.c_str(), nullptr};
+    if (posix_spawnp(&pid, "xdg-open", nullptr, nullptr,
+                     const_cast<char**>(argv), environ) == 0) {
+        LOG_INFO("URL opened");
+    } else {
+        LOG_ERROR("posix_spawnp(xdg-open) failed");
+    }
+#endif
 }
