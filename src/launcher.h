@@ -24,6 +24,7 @@ struct L10n {
     std::string font_warning;
     std::string invalid_nick_tip;
     std::string versions_failed, versions_failed_tip, reload, loading_versions;
+    std::string dl_speed_fmt, dl_eta_fmt, dl_checking;
 };
 
 class Launcher {
@@ -49,6 +50,11 @@ public:
 
 
     void set_status(const std::string& text, float progress);
+
+    // Скорость и ETA текущей стадии. ETA < 0 — неизвестно.
+    double download_speed_mbps() const;
+    int download_eta_seconds() const;
+    bool download_checking() const;
 
 
     UiLang ui_lang() const { return lang_; }
