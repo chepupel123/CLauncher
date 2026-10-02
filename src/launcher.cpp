@@ -201,7 +201,7 @@ Launcher::Launcher() {
 }
  
 Launcher::~Launcher() {
- 
+    if (reload_thread_.joinable()) reload_thread_.join();
     if (worker_.joinable()) worker_.join();
  
     if (window_) {
@@ -240,7 +240,16 @@ void Launcher::init() {
     release_versions_ = VersionManager::get_release_versions();
  
     if (!release_versions_.empty()) {
-        config_.selected_version = release_versions_[0];
+        if (config_.selected_version.empty() ||
+            std::find(release_versions_.begin(), release_versions_.end(),
+                      config_.selected_version) == release_versions_.end()) {
+            config_.selected_version = release_versions_[0];
+        }
+        if (version_supports_fabric(config_.selected_version)) {
+            config_.mod_loader = preferred_mod_loader_;
+        } else {
+            config_.mod_loader = ModLoader::Vanilla;
+        }
     } else {
         LOG_ERROR("No release versions found — UI will show a retry hint");
     }
@@ -300,6 +309,26 @@ void Launcher::setup_imgui() {
 }
  
 void Launcher::render() {
+    glfwPollEvents();
+
+    if (hide_window_requested_.exchange(false)) {
+        glfwHideWindow(window_);
+    }
+    if (show_window_requested_.exchange(false)) {
+        glfwShowWindow(window_);
+        glfwFocusWindow(window_);
+    }
+
+    if (glfwWindowShouldClose(window_)) {
+        should_close_ = true;
+        return;
+    }
+
+    if (!glfwGetWindowAttrib(window_, GLFW_VISIBLE)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+
     // Reload выполнился в фоновом потоке — забираем результат в главном.
     if (reload_ready_.exchange(false)) {
         std::vector<std::string> fetched;
@@ -345,9 +374,6 @@ void Launcher::render() {
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     glfwSwapBuffers(window_);
-    glfwPollEvents();
- 
-    if (glfwWindowShouldClose(window_)) should_close_ = true;
 }
  
 void Launcher::set_status(const std::string& text, float progress) {
@@ -384,6 +410,8 @@ bool Launcher::load_settings() {
         }
         std::snprintf(nickname_buf_, sizeof(nickname_buf_), "%s", clean.c_str());
         memory_index_ = std::clamp(j.value("memory_index", 1), 0, RAM_OPTIONS_COUNT - 1);
+        config_.selected_version = j.value("selected_version", std::string());
+        if (j.value("mod_loader", 0) == 1) preferred_mod_loader_ = ModLoader::Fabric;
         config_.memory_mb = RAM_OPTIONS[memory_index_];
         LOG_INFO("Settings loaded: lang=" << j.value("lang", "en")
                  << ", nickname=" << nickname_buf_);
@@ -408,7 +436,8 @@ void Launcher::reload_versions() {
     // lang_ (который может поменяться в главном потоке из переключателя языка).
     const std::string ready_text = tr().ready;
 
-    std::thread([this, ready_text] {
+    if (reload_thread_.joinable()) reload_thread_.join();
+    reload_thread_ = std::thread([this, ready_text] {
         std::vector<std::string> fetched;
         bool ok = false;
         try {
@@ -426,7 +455,7 @@ void Launcher::reload_versions() {
             reload_ready_ = true;   // render() заберёт результат
         }
         set_status(ready_text, 0.0f);
-    }).detach();
+    });
 }
  
 void Launcher::save_settings() const {
@@ -435,6 +464,8 @@ void Launcher::save_settings() const {
         j["lang"] = (lang_ == UiLang::Ru) ? "ru" : "en";
         j["nickname"] = std::string(nickname_buf_);
         j["memory_index"] = memory_index_;
+        j["selected_version"] = config_.selected_version;
+        j["mod_loader"]       = static_cast<int>(preferred_mod_loader_);
         fs::create_directories(settings_path().parent_path());
         std::ofstream f(settings_path());
         f << j.dump(2);
@@ -500,6 +531,12 @@ void Launcher::draw_ui() {
                 bool is_selected = (ver == config_.selected_version);
                 if (ImGui::Selectable(ver.c_str(), is_selected)) {
                     config_.selected_version = ver;
+                    if (version_supports_fabric(ver)) {
+                        config_.mod_loader = preferred_mod_loader_;
+                    } else {
+                        config_.mod_loader = ModLoader::Vanilla;
+                    }
+                    save_settings();
                 }
                 if (is_selected) ImGui::SetItemDefaultFocus();
             }
@@ -536,11 +573,17 @@ void Launcher::draw_ui() {
     if (fabric_ok) {
         if (ImGui::BeginCombo("##loader_combo",
                               config_.mod_loader == ModLoader::Fabric ? "Fabric" : "Vanilla")) {
-            if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla))
+            if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla)) {
                 config_.mod_loader = ModLoader::Vanilla;
+                preferred_mod_loader_ = ModLoader::Vanilla;
+                save_settings();
+            }
             if (config_.mod_loader == ModLoader::Vanilla) ImGui::SetItemDefaultFocus();
-            if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric))
+            if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric)) {
                 config_.mod_loader = ModLoader::Fabric;
+                preferred_mod_loader_ = ModLoader::Fabric;
+                save_settings();
+            }
             if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
             ImGui::EndCombo();
         }
@@ -653,7 +696,8 @@ void Launcher::handle_play_button() {
     }
     if (is_working) return;
     if (worker_.joinable()) worker_.join();
- 
+
+    save_settings();
     is_working = true;
     set_status(tr().preparing, 0.0f);
  
@@ -706,15 +750,16 @@ void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& 
     }
  
     set_status(sfmt(L.launching, launch_version), 0.95f);
- 
-    bool launched = JavaLauncher::launch(cfg.nickname, launch_version, cfg.memory_mb);
- 
+
+    hide_window_requested_ = true;
+
+    bool launched = JavaLauncher::launch(cfg.nickname, launch_version,
+                                         cfg.memory_mb, /*wait_for_exit=*/true);
+
+    show_window_requested_ = true;
+
     if (launched) {
-        set_status(L.game_launched, 1.0f);
- 
-        // Небольшая задержка для плавного закрытия окна
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        should_close_ = true;
+        set_status(L.ready, 0.0f);
     } else {
         set_status(L.launch_failed, 0.0f);
     }
