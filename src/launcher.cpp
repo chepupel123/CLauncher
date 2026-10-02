@@ -112,6 +112,9 @@ static const L10n& l10n_en() {
                           "On Windows, make sure cacert.pem is next to the .exe.",
          "Reload",
          "Loading versions...",
+         "(%.2f MB/s)",
+         "— %d:%02d left",
+         "checking...",
     };
     return L;
 }
@@ -162,6 +165,9 @@ static const L10n& l10n_ru() {
                              "На Windows убедитесь, что cacert.pem лежит рядом с .exe.",
          "Обновить",
          "Загрузка версий...",
+         "(%.2f МБ/с)",
+         "— осталось %d:%02d",
+         "проверка...",
     };
     return L;
 }
@@ -184,10 +190,16 @@ static const char* ru_stage(const char* stage) {
     return it != M.end() ? it->second : stage;
 }
  
-static void installer_progress_cb(int percent, const char* stage, void* ) {
+static void installer_progress_cb(size_t bytes_done, size_t bytes_total,
+                                  const char* stage, void* ) {
     if (!g_active_launcher) return;
     const char* s = (g_active_launcher->ui_lang() == UiLang::Ru) ? ru_stage(stage) : stage;
-    g_active_launcher->set_status(s, percent / 100.0f);
+    float pr;
+    if (bytes_total > 0)
+        pr = MinecraftInstaller::bar_percent(bytes_done, bytes_total) / 100.f;
+    else
+        pr = static_cast<float>(bytes_done) / 100.f;
+    g_active_launcher->set_status(s, pr);
 }
  
 Launcher::Launcher() {
@@ -380,6 +392,18 @@ void Launcher::set_status(const std::string& text, float progress) {
     std::lock_guard<std::mutex> lk(status_mutex_);
     status_text = text;
     this->progress = progress;
+}
+
+double Launcher::download_speed_mbps() const {
+    return MinecraftInstaller::g_download_speed_mbps.load(std::memory_order_relaxed);
+}
+
+int Launcher::download_eta_seconds() const {
+    return MinecraftInstaller::g_download_eta_seconds.load(std::memory_order_relaxed);
+}
+
+bool Launcher::download_checking() const {
+    return MinecraftInstaller::g_download_checking.load(std::memory_order_relaxed);
 }
  
 const L10n& Launcher::tr() const {
@@ -662,6 +686,27 @@ void Launcher::draw_ui() {
         }
         if (is_working) {
             ImGui::Text("%s", st.c_str());
+            if (download_checking()) {
+                ImGui::SameLine();
+                ImGui::Text("  %s", L.dl_checking.c_str());
+            } else {
+                double speed = download_speed_mbps();
+                if (speed > 0.01) {
+                    ImGui::SameLine();
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), L.dl_speed_fmt.c_str(), speed);
+                    ImGui::Text("  %s", buf);
+                }
+                int eta = download_eta_seconds();
+                if (eta > 0) {
+                    int m = eta / 60;
+                    int s = eta % 60;
+                    ImGui::SameLine();
+                    char ebuf[64];
+                    std::snprintf(ebuf, sizeof(ebuf), L.dl_eta_fmt.c_str(), m, s);
+                    ImGui::Text("  %s", ebuf);
+                }
+            }
             ImGui::ProgressBar(pr, ImVec2(-1, 20));
         } else {
             if (!st.empty()) ImGui::TextDisabled("%s", st.c_str());
@@ -699,6 +744,9 @@ void Launcher::handle_play_button() {
 
     save_settings();
     is_working = true;
+    MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
+    MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
+    MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
     set_status(tr().preparing, 0.0f);
  
  
