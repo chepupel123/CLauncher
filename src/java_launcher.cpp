@@ -566,6 +566,12 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         for (const auto& lib : prof["libraries"]) {
             if (!lib.contains("name")) continue;
             if (!library_allowed(lib)) continue;
+            // 1.12.2: jinput-platform has only natives classifiers, no artifact jar.
+            // Installer extracts it into versions/<ver>/natives. Not a classpath entry.
+            if (lib.contains("natives") &&
+                !(lib.contains("downloads") && lib["downloads"].contains("artifact"))) {
+                continue;
+            }
 
             std::string lib_name = lib["name"].get<std::string>();
             std::string group_path, artifact, lib_version, classifier;
@@ -689,7 +695,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     game_args.push_back("--assetIndex");  game_args.push_back(assetIndex);
     game_args.push_back("--userProperties"); game_args.push_back("{}");
     game_args.push_back("--versionType"); game_args.push_back("release");
-    game_args.push_back("--fullScreen");
+    game_args.push_back("--fullscreen");
 
     std::vector<std::string> exec_args;
     fs::path argfile = version_dir / "java-args.argfile";
