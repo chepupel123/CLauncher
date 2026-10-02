@@ -8,12 +8,12 @@ A lightweight native Minecraft launcher for Linux and Windows, written in C++20 
   <img src="screenshots/interface_en_vanilla.png" alt="CLauncher Interface (Vanilla)" width="700"/>
 </p>
 
-Requires OpenGL 3.0 or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 10/11. The binary is about three megabytes, and the launcher itself idles at roughly 30 to 50 MB of RAM (Minecraft's own memory is configured separately in the UI). The reference development machine is a 2012 desktop computer, used as a practical old-hardware baseline rather than a guarantee for every possible system configuration.
+Requires **OpenGL 3.3 Core** or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 10/11. The binary is about three megabytes, and the launcher itself idles at roughly 30 to 50 MB of RAM (Minecraft's own memory is configured separately in the UI). The reference development machine is a 2012 desktop computer, used as a practical old-hardware baseline rather than a guarantee for every possible system configuration.
 
 ## Features
 
 * **Vanilla Minecraft installation** straight from the launcher: client, libraries, assets and native libraries are downloaded automatically from the official Mojang servers.
-* **Fabric support.** Fabric is installed through the official Fabric installer (the launcher runs its installer jar), and the loader version is fetched live from Fabric Meta.
+* **Fabric support (Minecraft 1.14+).** Fabric is installed through the official Fabric installer (the launcher runs its installer jar), and the loader version is fetched live from Fabric Meta. For older versions the Fabric option is hidden — those releases have no Fabric loader, and the launcher prevents the crash entirely.
 * **Performance mods** with one checkbox: Sodium, Lithium and FerriteCore. Mod versions are matched automatically to the selected Minecraft version through the Modrinth API.
 
 <p align="center">
@@ -24,10 +24,15 @@ Requires OpenGL 3.0 or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 1
 * **Resource packs.** The Resource Packs button opens the shared resource pack folder. Drop a zip pack there, then enable it in Minecraft's in-game resource pack menu.
 * **Automatic Java management.** The launcher first checks whether a compatible system Java exists (via `java -version`); on Linux it can then install the matching JRE through the distribution package manager (apt, dnf, pacman, zypper or apk), and as a final fallback it always downloads a portable JRE (8, 17 or 21, matched to the Minecraft version) from Adoptium. On Windows only the portable JRE is used.
 * **Parallel downloads.** Minecraft assets are thousands of small files. The launcher downloads them with a pool of sixteen threads and connection reuse, cutting the first installation from about an hour to a few minutes.
+* **Download speed and ETA.** During asset downloads the launcher shows the current download speed (MB/s) and the estimated time remaining.
 * **Integrity checking.** Downloaded game files — the client, libraries, native libraries and assets — as well as performance mods from Modrinth are verified by SHA1 whenever Mojang or Modrinth provide a checksum. Corrupted and incomplete files are detected and re-fetched automatically on the next launch.
+* **Single-instance protection.** Accidentally launching CLauncher twice no longer opens a second window — the duplicate process exits immediately, so two copies never download assets into the same folder at the same time.
+* **Session persistence.** Your nickname, selected Minecraft version, mod loader, memory allocation and language are saved between launches.
+* **Clean window handling.** When you press Play, the launcher window hides itself while the game is running and reappears automatically when you exit Minecraft.
 * **Responsive interface.** All installation work runs in a background thread, the window never freezes, and progress is shown in real time.
 * **Two interface languages.** English and Russian, switchable on the fly, with the choice saved.
 * **Multilingual documentation.** README files are available in English, Russian and Kazakh.
+* **File logging.** All launcher output is written to `clauncher.log` next to the executable (or in the launcher data folder if that location is not writable), which makes debugging on Windows possible.
 * **Safe game launch.** The game starts through `execv` on Linux and `CreateProcessW` on Windows, with no shell involved. A long classpath is passed through an argfile, so neither its length nor special characters in the nickname can break the launch.
 
 ## Supported Versions
@@ -35,7 +40,7 @@ Requires OpenGL 3.0 or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 1
 * **Vanilla and Fabric:** every 1.x release in the Mojang manifest, through the 1.21.x line (Fabric from 1.14.x onward).
 * **The 26.x line** and anything newer are intentionally not supported: they require Java 25 and a new modding toolchain, target substantially newer hardware than this launcher is designed for, and are still fresh and unstable. For 26.x please use the official launcher. Support may be added once the line and its modding ecosystem stabilize.
 
-**System requirements:** Linux Mint 21+, Ubuntu 22.04+, Debian 12+, or Windows 10 and 11. OpenGL 3.0 or newer. The prebuilt AppImage needs glibc 2.35 or newer; on older systems build from source.
+**System requirements:** Linux Mint 21+, Ubuntu 22.04+, Debian 12+, or Windows 10 and 11. **OpenGL 3.3 Core** or newer. The prebuilt AppImage needs glibc 2.35 or newer; on older systems build from source.
 
 ## Download
 
@@ -83,7 +88,7 @@ Run it:
 ./CLauncher
 ```
 
-## Quick Start on Windows
+Quick Start on Windows
 
 You will need MSYS2. Download the installer from msys2.org and install it to C:\msys64. Open the MSYS2 MINGW64 terminal and run:
 
@@ -107,65 +112,71 @@ This produces CLauncher.exe. It links dynamically against glfw3.dll and libcurl-
 
 On first launch, SmartScreen or your antivirus may show a warning because the exe is unsigned: click More info, then Run anyway. Java archives are extracted with the built-in tar.exe (Windows 10 1803+), with PowerShell used only as a fallback on older systems.
 
-## How It Works Under the Hood
+How It Works Under the Hood
 
 When you press Play, the launcher runs the following chain:
 
 1. MinecraftInstaller syncs with the Mojang manifest and downloads whatever is missing: the game client, libraries, several thousand asset files and native components. The parallel downloads write each file to a temporary .part name and rename it only after its SHA1 check succeeds; files with no published checksum are still retried on failure.
 2. Fabric (optional) — if selected, the official Fabric installer runs, the loader version is taken live from Fabric Meta, and then Sodium, Lithium and FerriteCore are downloaded from Modrinth, matched to your game version.
 3. JavaManager — if the system has no suitable Java, it first looks for a system Java, then (on Linux) tries to install the matching JRE through the distribution package manager, and finally downloads a portable JRE from the Adoptium servers and unpacks it into a local folder if nothing else is available.
-4. JavaLauncher starts the game through execv on Linux or CreateProcessW on Windows. There is no shell between the launcher and the game, and a long classpath is passed through an argfile. After the game starts successfully, the launcher closes itself after a second and a half, and the game process id is saved to the last_game.pid file.
+4. JavaLauncher starts the game through execv on Linux or CreateProcessW on Windows. There is no shell between the launcher and the game, and a long classpath is passed through an argfile.
+5. While the game is running, the launcher window hides itself. When you exit Minecraft, the window reappears automatically, ready for another launch.
 
 Key architectural decisions:
 
-* CLauncher uses the standard `.minecraft` directory, compatible with the official launcher, so worlds, resource packs and other game data are shared.
-* Each Fabric version has its own mods folder, so mods from different versions do not get mixed together.
-* Every launch runs an integrity check of what is installed, and only missing or corrupted files get downloaded.
-* The asset index for Fabric profiles is resolved from the parent vanilla version through inheritance (`inheritsFrom`).
+· CLauncher uses the standard .minecraft directory, compatible with the official launcher, so worlds, resource packs and other game data are shared.
+· Each Fabric version has its own mods folder, so mods from different versions do not get mixed together.
+· Every launch runs an integrity check of what is installed, and only missing or corrupted files get downloaded.
+· The asset index for Fabric profiles is resolved from the parent vanilla version through inheritance (inheritsFrom).
+· A single-instance lock prevents two copies of the launcher from running at once.
 
-## Usage
+Usage
 
 1. Enter a nickname. Latin letters, digits and underscore only; anything else is filtered automatically.
 2. Pick a version from the list. The list comes from the official Mojang manifest and is cached, so it works offline too.
-3. Pick a loader: Vanilla or Fabric. For Fabric there is a performance mods checkbox.
+3. Pick a loader: Vanilla or Fabric. For Fabric there is a performance mods checkbox. (The Fabric option is only available for Minecraft 1.14 and newer.)
 4. Pick the memory amount. 2048 MB is recommended.
 5. Press Play. The first installation takes a while; later launches only verify the installed files and fetch anything missing, so they are much faster.
 
 The My Mods button opens the mods folder of the current Fabric version. The Resource Packs button opens the resource packs folder. In the top right corner there is the language switch.
 
-## File Locations
+File Locations
 
 On Linux:
 
-* Game: `.minecraft` folder in your home directory
-* Worlds: `.minecraft/saves`
-* Mods: `.minecraft/versions/version-name/mods`
-* Resource packs: `.minecraft/resourcepacks`
-* Downloaded Java: `.minecraft-launcher/runtime`
-* Launcher settings: `.minecraft-launcher/launcher_settings.json`
+· Game: .minecraft folder in your home directory
+· Worlds: .minecraft/saves
+· Mods: .minecraft/versions/version-name/mods
+· Resource packs: .minecraft/resourcepacks
+· Downloaded Java: .minecraft-launcher/runtime
+· Launcher settings: .minecraft-launcher/launcher_settings.json
+· Launcher log: clauncher.log (next to the executable, or in the launcher data folder)
 
 On Windows:
 
-* Game: `.minecraft` folder in your user directory
-* Mods and worlds: same as Linux
-* Downloaded Java and launcher settings: `minecraft-launcher` folder inside AppData Roaming
+· Game: .minecraft folder in your user directory
+· Mods and worlds: same as Linux
+· Downloaded Java and launcher settings: minecraft-launcher folder inside AppData Roaming
+· Launcher log: clauncher.log (next to the executable, or in the launcher data folder)
 
-## Offline Player Identity
+Offline Player Identity
 
-The launcher generates a deterministic offline UUID from the nickname using Minecraft's standard `OfflinePlayer:` naming scheme (a name-based MD5 UUID, version 3) — the same identifier an offline-mode server derives from the nickname. It is stable between launches, so your progress in worlds is preserved correctly.
+The launcher generates a deterministic offline UUID from the nickname using Minecraft's standard OfflinePlayer: naming scheme (a name-based MD5 UUID, version 3) — the same identifier an offline-mode server derives from the nickname. It is stable between launches, so your progress in worlds is preserved correctly.
 
-## Known Limitations
+Known Limitations
 
-* The 26.x line is not supported at all (Vanilla included): it requires Java 25, targets newer hardware than this launcher aims at, and is still unstable. Choose 1.21.x or older.
-* The Windows executable is unsigned, so SmartScreen or your antivirus may show a warning on the first launch (More info → Run anyway). Java is unpacked with Windows' built-in tar.exe (PowerShell is only a fallback).
-* The first installation is slow: several thousand asset files. Later launches are much faster, because everything is cached and SHA1-checked and only missing files are downloaded.
-* Cyrillic in nicknames is rejected on purpose: the nickname goes to servers and into world files, where only a limited character set is safe.
+· The 26.x line is not supported at all (Vanilla included): it requires Java 25, targets newer hardware than this launcher aims at, and is still unstable. Choose 1.21.x or older.
+· The Windows executable is unsigned, so SmartScreen or your antivirus may show a warning on the first launch (More info → Run anyway). Java is unpacked with Windows' built-in tar.exe (PowerShell is only a fallback).
+· The first installation is slow: several thousand asset files. Later launches are much faster, because everything is cached and SHA1-checked and only missing files are downloaded.
+· Cyrillic in nicknames is rejected on purpose: the nickname goes to servers and into world files, where only a limited character set is safe.
+· The Cancel button during installation is not yet implemented (planned for a future release).
 
-## If Something Does Not Work
+If Something Does Not Work
 
-* **GLFW init failed error.** GLFW is not installed, or you are launching outside a graphical session. Install `libglfw3-dev`.
-* **Question marks instead of text.** A font with Cyrillic support was not found. Install `fonts-dejavu-core`.
-* **Java download failed.** Check your internet, or install Java manually: if the major version matches, the launcher uses the system one.
-* **Missing sounds or empty language list.** Press Play for that version once more: the launcher will verify the assets and fetch whatever is missing.
-* **The game crashes right after startup.** Most likely a mod built for a different Minecraft version. Remove it from the mods folder.
-* **The download stalled halfway.** Press Play again: already downloaded files are kept and verified by SHA1, and only missing or incomplete files are fetched again.
+· GLFW init failed error. GLFW is not installed, or you are launching outside a graphical session. Install libglfw3-dev.
+· Question marks instead of text. A font with Cyrillic support was not found. Install fonts-dejavu-core.
+· Java download failed. Check your internet, or install Java manually: if the major version matches, the launcher uses the system one.
+· Missing sounds or empty language list. Press Play for that version once more: the launcher will verify the assets and fetch whatever is missing.
+· The game crashes right after startup. Most likely a mod built for a different Minecraft version. Remove it from the mods folder.
+· The download stalled halfway. Press Play again: already downloaded files are kept and verified by SHA1, and only missing or incomplete files are fetched again.
+· Two launcher windows appear. This should not happen — the single-instance lock prevents it. If it does, check clauncher.log and report it on Discord.
