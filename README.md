@@ -8,7 +8,7 @@ A lightweight native Minecraft launcher for Linux and Windows, written in C++20 
   <img src="screenshots/interface_en_vanilla.png" alt="CLauncher Interface (Vanilla)" width="700"/>
 </p>
 
-Requires **OpenGL 3.3 Core** or newer. Runs on Linux (Mint, Ubuntu, Debian) and Windows 10/11. The binary is about three megabytes, and the launcher itself idles at roughly 30 to 50 MB of RAM (Minecraft's own memory is configured separately in the UI). The reference development machine is a 2012 desktop computer, used as a practical old-hardware baseline rather than a guarantee for every possible system configuration.
+Requires **OpenGL 3.3 Core** or newer. Runs on Linux (Debian, Ubuntu, Mint, Kali, Fedora, Arch, openSUSE, Alpine and other distributions) and Windows 10/11. The binary is about three megabytes, and the launcher itself idles at roughly 30 to 50 MB of RAM (Minecraft's own memory is configured separately in the UI). The reference development machine is a 2012 desktop computer, used as a practical old-hardware baseline rather than a guarantee for every possible system configuration.
 
 ## Features
 
@@ -35,12 +35,24 @@ Requires **OpenGL 3.3 Core** or newer. Runs on Linux (Mint, Ubuntu, Debian) and 
 * **File logging.** All launcher output is written to `clauncher.log` next to the executable (or in the launcher data folder if that location is not writable), which makes debugging on Windows possible.
 * **Safe game launch.** The game starts through `execv` on Linux and `CreateProcessW` on Windows, with no shell involved. A long classpath is passed through an argfile, so neither its length nor special characters in the nickname can break the launch.
 
+## Linux Distribution Support
+
+CLauncher is distribution-agnostic. It relies only on standard libraries (glfw, libcurl, OpenGL, nlohmann-json) available in every major distro. The JavaManager uses the native package manager of your distribution:
+
+* **apt** — Debian, Ubuntu, Mint, Kali, Pop!_OS
+* **dnf** — Fedora, RHEL, CentOS Stream
+* **pacman** — Arch, Manjaro, EndeavourOS, Garuda
+* **zypper** — openSUSE Tumbleweed, Leap
+* **apk** — Alpine Linux
+
+If the package manager cannot install a suitable JRE, the launcher falls back to downloading a portable JRE from Adoptium — this works on any distro.
+
 ## Supported Versions
 
 * **Vanilla and Fabric:** every 1.x release in the Mojang manifest, through the 1.21.x line (Fabric from 1.14.x onward).
 * **The 26.x line** and anything newer are intentionally not supported: they require Java 25 and a new modding toolchain, target substantially newer hardware than this launcher is designed for, and are still fresh and unstable. For 26.x please use the official launcher. Support may be added once the line and its modding ecosystem stabilize.
 
-**System requirements:** Linux Mint 21+, Ubuntu 22.04+, Debian 12+, or Windows 10 and 11. **OpenGL 3.3 Core** or newer. The prebuilt AppImage needs glibc 2.35 or newer; on older systems build from source.
+**System requirements:** any modern Linux distribution with glibc 2.35+ and **OpenGL 3.3 Core**, or Windows 10 and 11. The prebuilt AppImage needs glibc 2.35 or newer; on older systems build from source.
 
 ## Download
 
@@ -55,6 +67,7 @@ If you prefer to build from source, follow the steps below.
 
 First, install the dependencies. In a terminal run:
 
+**Debian / Ubuntu / Mint / Kali / Pop!_OS:**
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential cmake git pkg-config unzip \
@@ -63,7 +76,33 @@ sudo apt-get install -y build-essential cmake git pkg-config unzip \
   libxcursor-dev fonts-dejavu-core
 ```
 
-Then get the project: click Code → Download ZIP on the repository page (or use git clone) and enter the project folder:
+Fedora / RHEL / CentOS Stream:
+
+```bash
+sudo dnf install -y gcc-c++ cmake git pkg-config unzip \
+  glfw-devel mesa-libGL-devel libcurl-devel \
+  nlohmann-json-devel libX11-devel libXrandr-devel \
+  libXinerama-devel libXcursor-devel dejavu-sans-fonts
+```
+
+Arch / Manjaro / EndeavourOS:
+
+```bash
+sudo pacman -S --needed base-devel cmake git pkg-config unzip \
+  glfw mesa curl nlohmann-json libx11 libxrandr \
+  libxinerama libxcursor ttf-dejavu
+```
+
+openSUSE:
+
+```bash
+sudo zypper install -y gcc-c++ cmake git pkg-config unzip \
+  glfw-devel Mesa-libGL-devel libcurl-devel \
+  nlohmann-json-devel libX11-devel libXrandr-devel \
+  libXinerama-devel libXcursor-devel dejavu-fonts
+```
+
+Then get the project:
 
 ```bash
 git clone https://github.com/chepupel123/CLauncher.git
@@ -117,10 +156,10 @@ How It Works Under the Hood
 When you press Play, the launcher runs the following chain:
 
 1. MinecraftInstaller syncs with the Mojang manifest and downloads whatever is missing: the game client, libraries, several thousand asset files and native components. The parallel downloads write each file to a temporary .part name and rename it only after its SHA1 check succeeds; files with no published checksum are still retried on failure.
-2. Fabric (optional) — if selected, the official Fabric installer runs, the loader version is taken live from Fabric Meta, and then Sodium, Lithium and FerriteCore are downloaded from Modrinth, matched to your game version.
-3. JavaManager — if the system has no suitable Java, it first looks for a system Java, then (on Linux) tries to install the matching JRE through the distribution package manager, and finally downloads a portable JRE from the Adoptium servers and unpacks it into a local folder if nothing else is available.
+2. Fabric (optional). If selected, the official Fabric installer runs, the loader version is taken live from Fabric Meta, and then Sodium, Lithium and FerriteCore are downloaded from Modrinth, matched to your game version.
+3. JavaManager. If the system has no suitable Java, it first looks for a system Java, then (on Linux) tries to install the matching JRE through the distribution package manager, and finally downloads a portable JRE from the Adoptium servers and unpacks it into a local folder if nothing else is available.
 4. JavaLauncher starts the game through execv on Linux or CreateProcessW on Windows. There is no shell between the launcher and the game, and a long classpath is passed through an argfile.
-5. While the game is running, the launcher window hides itself. When you exit Minecraft, the window reappears automatically, ready for another launch.
+5. While the game is running the launcher window hides itself. When you exit Minecraft, the window reappears automatically, ready for another launch.
 
 Key architectural decisions:
 
@@ -157,7 +196,7 @@ On Windows:
 · Game: .minecraft folder in your user directory
 · Mods and worlds: same as Linux
 · Downloaded Java and launcher settings: minecraft-launcher folder inside AppData Roaming
-· Launcher log: clauncher.log (next to the executable, or in the launcher data folder)
+· Launcher log: clauncher.log (next to the .exe, or in the launcher data folder)
 
 Offline Player Identity
 
@@ -173,8 +212,8 @@ Known Limitations
 
 If Something Does Not Work
 
-· GLFW init failed error. GLFW is not installed, or you are launching outside a graphical session. Install libglfw3-dev.
-· Question marks instead of text. A font with Cyrillic support was not found. Install fonts-dejavu-core.
+· GLFW init failed error. GLFW is not installed, or you are launching outside a graphical session. Install the appropriate -dev package for your distribution.
+· Question marks instead of text. A font with Cyrillic support was not found. Install fonts-dejavu-core (Debian/Ubuntu), dejavu-sans-fonts (Fedora), ttf-dejavu (Arch), dejavu-fonts (openSUSE).
 · Java download failed. Check your internet, or install Java manually: if the major version matches, the launcher uses the system one.
 · Missing sounds or empty language list. Press Play for that version once more: the launcher will verify the assets and fetch whatever is missing.
 · The game crashes right after startup. Most likely a mod built for a different Minecraft version. Remove it from the mods folder.
