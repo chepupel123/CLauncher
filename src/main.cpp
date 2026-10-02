@@ -16,8 +16,6 @@
 int main(int argc, char** argv) {
     // Лог-файл: clauncher.log рядом с исполняемым файлом (или в папке данных
     // лаунчера, если рядом с exe нет прав на запись).
-    logger::init(argc > 0 ? argv[0] : nullptr);
-
     if (!single_instance::acquire()) {
         LOG_WARN("Another instance is already running — exiting");
 #ifdef _WIN32
@@ -28,6 +26,8 @@ int main(int argc, char** argv) {
 #endif
         return 0;
     }
+
+    logger::init(argc > 0 ? argv[0] : nullptr);
 
     // TLS: на Windows сначала настраиваем системное хранилище CA
     // (CURLSSLOPT_NATIVE_CA, libcurl >= 7.71), затем cacert.pem рядом с exe.
