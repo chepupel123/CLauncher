@@ -61,6 +61,8 @@ private:
     std::vector<std::string> release_versions_;
     int memory_index_ = 1;
     std::atomic<bool> should_close_{false};
+    std::atomic<bool> hide_window_requested_{false};
+    std::atomic<bool> show_window_requested_{false};
 
 
     std::atomic<bool> is_working{false};
@@ -69,6 +71,7 @@ private:
     std::mutex status_mutex_;
 
     std::thread worker_;
+    std::thread reload_thread_;
 
 
     UiLang lang_ = UiLang::En;
@@ -80,6 +83,7 @@ private:
 
 
     bool perf_mods_checked_ = true;
+    ModLoader preferred_mod_loader_ = ModLoader::Vanilla;
 
 
     int invalid_nick_drops_ = 0;
