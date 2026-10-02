@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -28,13 +29,112 @@ namespace fs = std::filesystem;
 static const char* g_stage_label = nullptr;  // текущий этап загрузки — для логов
 using json = nlohmann::json;
 
+namespace MinecraftInstaller {
+    std::atomic<double> g_download_speed_mbps{0.0};
+    std::atomic<int> g_download_eta_seconds{-1};
+    std::atomic<bool> g_download_checking{false};
+}
+
 namespace {
     MinecraftInstaller::ProgressFn g_progress_fn = nullptr;
     void* g_progress_user = nullptr;
 
+    std::atomic<size_t> g_bytes_done{0};
+    std::atomic<int> g_verify_inflight{0};
+    int g_stage_pct_from = -1;
+    int g_stage_pct_to = -1;
+
+    std::chrono::steady_clock::time_point last_speed_check{};
+    size_t last_bytes_done = 0;
+    bool g_speed_started = false;
+    std::deque<double> g_speed_window;
+
+    thread_local bool t_count_bytes = false;
+    thread_local size_t t_attempt_bytes = 0;
 
     void report_progress(int pct, const char* stage) {
-        if (g_progress_fn) g_progress_fn(pct, stage, g_progress_user);
+        if (!g_progress_fn) return;
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        // bytes_total == 0: это не байты, а старый процент 0..100 в bytes_done.
+        g_progress_fn(static_cast<size_t>(pct), 0, stage, g_progress_user);
+    }
+
+    void reset_speed_state() {
+        last_speed_check = {};
+        last_bytes_done = 0;
+        g_speed_started = false;
+        g_speed_window.clear();
+        g_bytes_done.store(0, std::memory_order_relaxed);
+        g_verify_inflight.store(0, std::memory_order_relaxed);
+        g_stage_pct_from = -1;
+        g_stage_pct_to = -1;
+        MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
+        MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
+        MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
+    }
+
+    // Среднее за ~10 с (40 замеров по 250 мс). Пока замеров < 4 — скорость не публикуем.
+    void update_speed_eta(size_t bytes_done, size_t bytes_total) {
+        if (bytes_total == 0) return;
+
+        auto now = std::chrono::steady_clock::now();
+        if (!g_speed_started) {
+            last_speed_check = now;
+            last_bytes_done = bytes_done;
+            g_speed_started = true;
+            return;
+        }
+        double elapsed = std::chrono::duration<double>(now - last_speed_check).count();
+        if (elapsed < 0.25) return;
+
+        size_t delta = (bytes_done >= last_bytes_done) ? (bytes_done - last_bytes_done) : 0;
+        last_speed_check = now;
+        last_bytes_done = bytes_done;
+
+        // Пока байты не пошли, нули в среднее не кладём: первые замеры врут.
+        if (g_speed_window.empty() && delta == 0) {
+            bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
+            MinecraftInstaller::g_download_checking.store(hashing, std::memory_order_relaxed);
+            return;
+        }
+
+        double speed_mbps = (static_cast<double>(delta) / 1024.0 / 1024.0) / elapsed;
+        g_speed_window.push_back(speed_mbps);
+        while (g_speed_window.size() > 40) g_speed_window.pop_front();
+
+        bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
+        bool idle = speed_mbps < 0.01;
+        if (hashing && idle) {
+            MinecraftInstaller::g_download_checking.store(true, std::memory_order_relaxed);
+            MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
+            MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
+            return;
+        }
+        MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
+
+        if (g_speed_window.size() < 4) {
+            MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
+            MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
+            return;
+        }
+
+        double sum = 0.0;
+        for (double s : g_speed_window) sum += s;
+        double avg = sum / static_cast<double>(g_speed_window.size());
+        MinecraftInstaller::g_download_speed_mbps.store(avg, std::memory_order_relaxed);
+
+        int eta = -1;
+        if (bytes_total > bytes_done && avg > 0.0) {
+            size_t remaining = bytes_total - bytes_done;
+            double speed_bps = avg * 1024.0 * 1024.0;
+            if (speed_bps > 1.0) {
+                double eta_d = static_cast<double>(remaining) / speed_bps;
+                if (eta_d >= 0.0 && eta_d < 1.0e8)
+                    eta = static_cast<int>(eta_d);
+            }
+        }
+        MinecraftInstaller::g_download_eta_seconds.store(eta, std::memory_order_relaxed);
     }
 }
 
@@ -67,7 +167,13 @@ namespace
 
     size_t write_file(void* ptr, size_t size, size_t count, FILE* file)
     {
-        return fwrite(ptr, size, count, file);
+        size_t n = fwrite(ptr, size, count, file);
+        if (t_count_bytes && n > 0) {
+            size_t nbytes = n * size;
+            t_attempt_bytes += nbytes;
+            g_bytes_done.fetch_add(nbytes, std::memory_order_relaxed);
+        }
+        return n;
     }
 
     // Кроссплатформенное открытие файла на запись: на Windows path::value_type
@@ -241,12 +347,27 @@ namespace
         fs::path dest;
         std::string sha1;
         std::string label;
+        size_t size = 0;
     };
+
+    size_t json_file_size(const json& j)
+    {
+        if (!j.contains("size") || !j["size"].is_number_integer()) return 0;
+        try {
+            int64_t sz = j["size"].get<int64_t>();
+            if (sz <= 0) return 0;
+            return static_cast<size_t>(sz);
+        } catch (...) {
+            return 0;
+        }
+    }
 
 
 
     bool download_item(CURL* curl, const DownloadItem& it)
     {
+        t_count_bytes = false;
+        t_attempt_bytes = 0;
         try {
             fs::create_directories(it.dest.parent_path());
             fs::path tmp = it.dest.string() + ".part";
@@ -266,13 +387,17 @@ namespace
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 45L);
 
+            t_count_bytes = it.size > 0;
             CURLcode result = curl_easy_perform(curl);
+            t_count_bytes = false;
             fclose(file);
 
             bool ok = (result == CURLE_OK);
             if (!ok) log_curl_failure(it.url, result);
             if (ok && !it.sha1.empty()) {
+                g_verify_inflight.fetch_add(1, std::memory_order_relaxed);
                 ok = verify_sha1(tmp, it.sha1);
+                g_verify_inflight.fetch_sub(1, std::memory_order_relaxed);
                 if (!ok) LOG_WARN("SHA1 mismatch for " << it.dest.filename().string());
             }
             if (ok) {
@@ -281,9 +406,21 @@ namespace
                 fs::rename(tmp, it.dest, ec);
                 ok = !ec;
             }
-            if (!ok) { std::error_code ec; fs::remove(tmp, ec); }
+            if (!ok) {
+                std::error_code ec;
+                fs::remove(tmp, ec);
+                if (t_attempt_bytes != 0) {
+                    g_bytes_done.fetch_sub(t_attempt_bytes, std::memory_order_relaxed);
+                    t_attempt_bytes = 0;
+                }
+            }
             return ok;
         } catch (...) {
+            t_count_bytes = false;
+            if (t_attempt_bytes != 0) {
+                g_bytes_done.fetch_sub(t_attempt_bytes, std::memory_order_relaxed);
+                t_attempt_bytes = 0;
+            }
             return false;
         }
     }
@@ -331,6 +468,13 @@ namespace
         LOG_INFO(stage_label << ": " << total << " files to download, "
                  << workers << " threads");
 
+        size_t bytes_total = 0;
+        for (const auto& it : todo)
+            if (it.size > 0) bytes_total += it.size;
+        reset_speed_state();
+        g_stage_pct_from = pct_from;
+        g_stage_pct_to = pct_to;
+
         std::atomic<size_t> next(0), done(0);
         std::mutex fail_mtx;
         std::vector<DownloadItem> failed;
@@ -363,32 +507,47 @@ namespace
                 return static_cast<int>(100 * d / total);
             return pct_from + static_cast<int>((pct_to - pct_from) * d / total);
         };
+        auto publish = [&](size_t d) {
+            if (bytes_total == 0) {
+                report_progress(pct_now(d), stage_label.c_str());
+                return;
+            }
+            size_t bytes_done = g_bytes_done.load(std::memory_order_relaxed);
+            update_speed_eta(bytes_done, bytes_total);
+            if (!g_progress_fn) return;
+            if (bytes_done > bytes_total) bytes_done = bytes_total;
+            g_progress_fn(bytes_done, bytes_total, stage_label.c_str(), g_progress_user);
+        };
         while (done.load(std::memory_order_relaxed) < total) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             size_t d = done.load(std::memory_order_relaxed);
             std::cout << "\r" << stage_label << ": " << d << "/" << total
                       << " (" << pct_now(d) << "%)      " << std::flush;
-            report_progress(pct_now(d), stage_label.c_str());
+            publish(d);
         }
         std::cout << "\r" << stage_label << ": " << total << "/" << total << " (100%)\n";
         for (auto& t : pool) t.join();
+        publish(total);
 
 
+        bool ok = true;
         if (!failed.empty()) {
             LOG_WARN(stage_label << ": " << failed.size()
                      << " file(s) failed in pool, retrying one by one...");
             std::vector<DownloadItem> still_failed;
             for (const auto& it : failed) {
                 if (!download_item_once(it)) still_failed.push_back(it);
+                publish(total);
             }
             if (!still_failed.empty()) {
                 for (const auto& it : still_failed)
                     LOG_ERROR("Failed to download: " << it.url
                               << (it.label.empty() ? "" : " (" + it.label + ")"));
-                return false;
+                ok = false;
             }
         }
-        return true;
+        reset_speed_state();
+        return ok;
     }
 
 
@@ -456,6 +615,7 @@ namespace
             it.dest = version_dir / "libraries" / artifact["path"].get<std::string>();
             it.sha1 = artifact.value("sha1", std::string());
             it.label = artifact["path"].get<std::string>();
+            it.size = json_file_size(artifact);
             items.push_back(std::move(it));
         }
         return parallel_download(std::move(items), "Libraries", 16, pct_from, pct_to);
@@ -509,6 +669,7 @@ namespace
             it.dest = assets / "objects" / prefix / hash;
             it.sha1 = hash;
             it.label = name;
+            it.size = json_file_size(object);
             items.push_back(std::move(it));
         }
         return parallel_download(std::move(items), "Assets", 16, pct_from, pct_to);
@@ -591,8 +752,19 @@ void MinecraftInstaller::set_progress_callback(ProgressFn fn, void* user) {
     g_progress_user = user;
 }
 
+int MinecraftInstaller::bar_percent(size_t bytes_done, size_t bytes_total)
+{
+    if (bytes_total == 0) return 0;
+    if (bytes_done > bytes_total) bytes_done = bytes_total;
+    double frac = static_cast<double>(bytes_done) / static_cast<double>(bytes_total);
+    if (g_stage_pct_from >= 0 && g_stage_pct_to > g_stage_pct_from)
+        return g_stage_pct_from + static_cast<int>((g_stage_pct_to - g_stage_pct_from) * frac);
+    return static_cast<int>(100.0 * frac);
+}
+
 bool MinecraftInstaller::install(const std::string& version)
 {
+    reset_speed_state();
     try
     {
         fs::path minecraft = launcher_paths::minecraft_dir();
@@ -695,6 +867,7 @@ bool MinecraftInstaller::install(const std::string& version)
 bool MinecraftInstaller::installPerformanceMods(const std::string& fabric_version_name,
                                                 const std::string& mc_version)
 {
+    reset_speed_state();
     try {
         fs::path mods_dir = launcher_paths::minecraft_dir() / "versions" / fabric_version_name / "mods";
         fs::create_directories(mods_dir);
