@@ -1015,7 +1015,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         std::string java_cmd = "java";
         try {
             JavaManager jm;
-            fs::path jp = jm.ensureJava(version);
+            fs::path jp = jm.ensureJava(jm.requiredMajor(version));
             if (!jp.empty()) java_cmd = jp.string();
         } catch (...) {}
 
