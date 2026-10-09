@@ -838,10 +838,10 @@ namespace
         }
         size_t start = lines.size() > 40 ? lines.size() - 40 : 0;
         if (start > 0)
-            LOG_ERROR(prefix << " (" << (lines.size() - start)
-                             << " last lines, earlier omitted)");
+            LOG_INFO(prefix << " (" << (lines.size() - start)
+                            << " last lines, earlier omitted)");
         for (size_t i = start; i < lines.size(); ++i)
-            LOG_ERROR(prefix << lines[i]);
+            LOG_INFO(prefix << lines[i]);
     }
 
 }
@@ -1181,6 +1181,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
                           "\" client -dir \"" + minecraft_dir.string() +
                           "\" -mcversion " + version +
                           " -loader " + loader_version +
+                          " -noprofile" +
                           " > \"" + fabric_log.string() + "\" 2>&1";
         int status = std::system(cmd.c_str());
         std::string fabric_out;
