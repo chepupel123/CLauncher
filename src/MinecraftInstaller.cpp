@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -38,6 +39,13 @@ namespace MinecraftInstaller {
 namespace {
     MinecraftInstaller::ProgressFn g_progress_fn = nullptr;
     void* g_progress_user = nullptr;
+    std::string g_last_error;
+
+    void set_install_error(const std::string& msg)
+    {
+        g_last_error = msg;
+        LOG_ERROR(msg);
+    }
 
     std::atomic<size_t> g_bytes_done{0};
     std::atomic<int> g_verify_inflight{0};
@@ -157,12 +165,16 @@ namespace
     }
 
     // Логируем сетевые ошибки в clauncher.log (уровень ERROR).
-    void log_curl_failure(const std::string& url, CURLcode rc, int attempt = 0)
+    std::string log_curl_failure(const std::string& url, CURLcode rc, int attempt = 0)
     {
-        LOG_ERROR("Download failed" << (attempt ? " (attempt " + std::to_string(attempt) + ")" : "")
-                  << " [" << (g_stage_label ? g_stage_label : "down")
-                  << "] " << curl_easy_strerror(rc)
-                  << ": " << url);
+        std::ostringstream ss;
+        ss << "Download failed";
+        if (attempt) ss << " (attempt " << attempt << ")";
+        ss << " [" << (g_stage_label ? g_stage_label : "down") << "] "
+           << curl_easy_strerror(rc) << ": " << url;
+        std::string msg = ss.str();
+        LOG_ERROR(msg);
+        return msg;
     }
 
     size_t write_file(void* ptr, size_t size, size_t count, FILE* file)
@@ -192,12 +204,20 @@ namespace
     {
         ensure_curl_global();
         fs::create_directories(path.parent_path());
+        std::string last_fail;
         for (int attempt = 1; attempt <= 2; ++attempt) {
             CURL* curl = curl_easy_init();
-            if (!curl) return false;
+            if (!curl) {
+                set_install_error("Failed to initialize curl");
+                return false;
+            }
             apply_tls(curl);
             FILE* file = open_write_binary(path);
-            if (!file) { curl_easy_cleanup(curl); return false; }
+            if (!file) {
+                curl_easy_cleanup(curl);
+                set_install_error("Failed to open " + path.string());
+                return false;
+            }
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
             curl_easy_setopt(curl, CURLOPT_USERAGENT, "Minecraft-Launcher/1.0");
@@ -210,8 +230,10 @@ namespace
             curl_easy_cleanup(curl);
             if (result == CURLE_OK) return true;
             fs::remove(path);
-            log_curl_failure(url, result, attempt);
+            last_fail = log_curl_failure(url, result, attempt);
         }
+        if (last_fail.empty()) last_fail = "Download failed: " + url;
+        g_last_error = last_fail;
         return false;
     }
 
@@ -540,6 +562,12 @@ namespace
                 publish(total);
             }
             if (!still_failed.empty()) {
+                const auto& first = still_failed.front();
+                std::string msg = "Failed to download: " + first.url;
+                if (!first.label.empty()) msg += " (" + first.label + ")";
+                if (still_failed.size() > 1)
+                    msg += " and " + std::to_string(still_failed.size() - 1) + " more";
+                g_last_error = msg;
                 for (const auto& it : still_failed)
                     LOG_ERROR("Failed to download: " << it.url
                               << (it.label.empty() ? "" : " (" + it.label + ")"));
@@ -600,7 +628,7 @@ namespace
                           int pct_from = -1, int pct_to = -1)
     {
         if (!metadata.contains("libraries")) {
-            std::cerr << "Metadata has no libraries section\n";
+            set_install_error("Metadata has no libraries section");
             return false;
         }
         std::vector<DownloadItem> items;
@@ -640,7 +668,7 @@ namespace
             LOG_INFO("Downloading asset index...");
             if (!download(asset_index_url, index_file)) return false;
             if (!index_sha.empty() && !verify_sha1(index_file, index_sha)) {
-                std::cerr << "SHA1 mismatch: asset index " << asset_index_id << '\n';
+                set_install_error("SHA1 mismatch: asset index " + asset_index_id);
                 return false;
             }
         }
@@ -648,10 +676,10 @@ namespace
         json asset_index;
         try {
             std::ifstream file(index_file);
-            if (!file) { std::cerr << "Failed to open asset index\n"; return false; }
+            if (!file) { set_install_error("Failed to open asset index"); return false; }
             file >> asset_index;
         } catch (const std::exception& e) {
-            std::cerr << "Failed to parse asset index: " << e.what() << '\n';
+            set_install_error(std::string("Failed to parse asset index: ") + e.what());
             return false;
         }
 
@@ -709,8 +737,9 @@ namespace
                 if (!download(url, dest_jar)) return false;
                 if (!native_sha.empty() && !verify_sha1(dest_jar, native_sha)) {
                     std::cerr << "Natives SHA1 mismatch, retrying: " << path << "\n";
-                    if (!download(url, dest_jar) || !verify_sha1(dest_jar, native_sha)) {
-                        std::cerr << "Natives SHA1 mismatch persists: " << path << "\n";
+                    if (!download(url, dest_jar)) return false;
+                    if (!verify_sha1(dest_jar, native_sha)) {
+                        set_install_error("Natives SHA1 mismatch persists: " + path);
                         return false;
                     }
                 }
@@ -755,10 +784,10 @@ namespace
 #endif
             if (std::system(cmd.c_str()) != 0) {
 #ifdef _WIN32
-                std::cerr << "Failed to extract natives (tar): " << jar << "\n";
+                set_install_error("Failed to extract natives (tar): " + jar.string());
 #else
-                std::cerr << "Failed to extract natives (is unzip installed?): "
-                          << jar << "\n";
+                set_install_error("Failed to extract natives (is unzip installed?): " +
+                                  jar.string());
 #endif
                 return false;
             }
@@ -768,6 +797,51 @@ namespace
             for (const auto& line : jar_ids) marker_out << line << '\n';
         }
         return true;
+    }
+
+    std::string pick_error_line(const std::string& text)
+    {
+        std::string last, hit;
+        std::istringstream in(text);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            size_t a = line.find_first_not_of(" \t");
+            if (a == std::string::npos) continue;
+            line = line.substr(a);
+            last = line;
+            if (line.find("Exception") != std::string::npos ||
+                line.find("Error") != std::string::npos ||
+                line.find("error") != std::string::npos ||
+                line.find("Failed") != std::string::npos ||
+                line.find("failed") != std::string::npos ||
+                line.find("No launcher") != std::string::npos)
+                hit = line;
+        }
+        std::string chosen = !hit.empty() ? hit : last;
+        for (char& c : chosen) {
+            if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+        }
+        if (chosen.size() > 240) chosen = chosen.substr(0, 237) + "...";
+        return chosen;
+    }
+
+    void log_output_lines(const char* prefix, const std::string& text)
+    {
+        std::istringstream in(text);
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.find_first_not_of(" \t") == std::string::npos) continue;
+            lines.push_back(line);
+        }
+        size_t start = lines.size() > 40 ? lines.size() - 40 : 0;
+        if (start > 0)
+            LOG_ERROR(prefix << " (" << (lines.size() - start)
+                             << " last lines, earlier omitted)");
+        for (size_t i = start; i < lines.size(); ++i)
+            LOG_ERROR(prefix << lines[i]);
     }
 
 }
@@ -787,9 +861,15 @@ int MinecraftInstaller::bar_percent(size_t bytes_done, size_t bytes_total)
     return static_cast<int>(100.0 * frac);
 }
 
+std::string MinecraftInstaller::last_error()
+{
+    return g_last_error;
+}
+
 bool MinecraftInstaller::install(const std::string& version)
 {
     reset_speed_state();
+    g_last_error.clear();
     try
     {
         fs::path minecraft = launcher_paths::minecraft_dir();
@@ -823,7 +903,7 @@ bool MinecraftInstaller::install(const std::string& version)
                 if (item.id == version) { version_url = item.url; break; }
             }
             if (version_url.empty()) {
-                std::cerr << "Version not found in manifest: " << version << '\n';
+                set_install_error("Version not found in manifest: " + version);
                 return false;
             }
 
@@ -833,12 +913,15 @@ bool MinecraftInstaller::install(const std::string& version)
             metadata = download_json(version_url);
             {
                 std::ofstream file(version_json);
-                if (!file) { std::cerr << "Failed to write " << version_json << '\n'; return false; }
+                if (!file) {
+                    set_install_error("Failed to write " + version_json.string());
+                    return false;
+                }
                 file << metadata.dump(2);
             }
 
             if (!metadata.contains("downloads") || !metadata["downloads"].contains("client")) {
-                std::cerr << "Client download information is missing\n";
+                set_install_error("Client download information is missing");
                 return false;
             }
             std::string client_url = metadata["downloads"]["client"]["url"];
@@ -848,8 +931,9 @@ bool MinecraftInstaller::install(const std::string& version)
             if (!download(client_url, client_jar)) return false;
             if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
                 std::cerr << "Client SHA1 mismatch, retrying download...\n";
-                if (!download(client_url, client_jar) || !verify_sha1(client_jar, client_sha)) {
-                    std::cerr << "Client SHA1 mismatch persists\n";
+                if (!download(client_url, client_jar)) return false;
+                if (!verify_sha1(client_jar, client_sha)) {
+                    set_install_error("Client SHA1 mismatch persists");
                     return false;
                 }
             }
@@ -868,23 +952,33 @@ bool MinecraftInstaller::install(const std::string& version)
                 report_progress(4, "Re-downloading client...");
                 std::cerr << "Client JAR corrupted (SHA1 mismatch), re-downloading...\n";
                 std::string client_url = metadata["downloads"]["client"]["url"];
-                if (!download(client_url, client_jar) || !verify_sha1(client_jar, client_sha)) {
-                    std::cerr << "Client JAR re-download failed\n";
+                if (!download(client_url, client_jar)) return false;
+                if (!verify_sha1(client_jar, client_sha)) {
+                    set_install_error("Client JAR re-download failed");
                     return false;
                 }
             }
         }
-        if (!ensure_libraries(version_dir, metadata, 10, 45)) return false;
-        if (!ensure_assets(minecraft, metadata, 45, 92)) return false;
+        if (!ensure_libraries(version_dir, metadata, 10, 45)) {
+            if (g_last_error.empty()) set_install_error("Failed to download libraries");
+            return false;
+        }
+        if (!ensure_assets(minecraft, metadata, 45, 92)) {
+            if (g_last_error.empty()) set_install_error("Failed to download assets");
+            return false;
+        }
         report_progress(92, "Natives...");
-        if (!ensure_natives(version_dir, metadata)) return false;
+        if (!ensure_natives(version_dir, metadata)) {
+            if (g_last_error.empty()) set_install_error("Failed to install natives");
+            return false;
+        }
         report_progress(98, "Done");
 
         LOG_INFO("Minecraft " << version << " installed successfully");
         return true;
     }
     catch (const std::exception& e) {
-        std::cerr << "MinecraftInstaller error: " << e.what() << '\n';
+        set_install_error(std::string("MinecraftInstaller error: ") + e.what());
         return false;
     }
 }
@@ -1029,7 +1123,8 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
 
 
         if (!install(version)) {
-            std::cerr << "Failed to install Vanilla " << version << "\n";
+            if (g_last_error.empty())
+                set_install_error("Failed to install Vanilla " + version);
             return "";
         }
 
@@ -1039,7 +1134,10 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
             std::cout << "Creating launcher_profiles.json...\n";
             fs::create_directories(profiles_path.parent_path());
             std::ofstream profiles(profiles_path);
-            if (!profiles.is_open()) { std::cerr << "Failed to create launcher_profiles.json\n"; return ""; }
+            if (!profiles.is_open()) {
+                set_install_error("Failed to create launcher_profiles.json");
+                return "";
+            }
             profiles << "{\n"
                      << "  \"profiles\": {},\n"
                      << "  \"settings\": {},\n"
@@ -1056,7 +1154,11 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
             std::cout << "Downloading Fabric Installer...\n";
             fs::create_directories(launcher_dir);
             std::string url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar";
-            if (!download(url, installer_path)) { std::cerr << "Failed to download Fabric Installer\n"; return ""; }
+            if (!download(url, installer_path)) {
+                if (g_last_error.empty())
+                    set_install_error("Failed to download Fabric Installer");
+                return "";
+            }
         }
 
 
@@ -1073,18 +1175,36 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
 
         report_progress(35, "Installing Fabric...");
         std::cout << "Installing Fabric...\n";
+        fs::path fabric_log = clauncher_cache_dir() / "fabric-installer.log";
+        fs::create_directories(fabric_log.parent_path());
         std::string cmd = "\"" + java_cmd + "\" -jar \"" + installer_path.string() +
                           "\" client -dir \"" + minecraft_dir.string() +
                           "\" -mcversion " + version +
-                          " -loader " + loader_version;
-        if (std::system(cmd.c_str()) != 0) {
-            std::cerr << "Fabric installation failed\n";
+                          " -loader " + loader_version +
+                          " > \"" + fabric_log.string() + "\" 2>&1";
+        int status = std::system(cmd.c_str());
+        std::string fabric_out;
+        {
+            std::ifstream in(fabric_log);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            fabric_out = ss.str();
+        }
+        if (status != 0) {
+            log_output_lines("Fabric installer: ", fabric_out);
+            std::string line = pick_error_line(fabric_out);
+            if (line.empty())
+                line = "Fabric installation failed (status " + std::to_string(status) + ")";
+            set_install_error(line);
             return "";
         }
 
 
         std::string found_folder = findFabricDir(version);
-        if (found_folder.empty()) { std::cerr << "Fabric directory not found\n"; return ""; }
+        if (found_folder.empty()) {
+            set_install_error("Fabric directory not found");
+            return "";
+        }
         fs::path fabric_dir = minecraft_dir / "versions" / found_folder;
 
 
@@ -1103,7 +1223,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
 
         fs::path profile_json = fabric_dir / (found_folder + ".json");
         if (!fs::exists(profile_json)) {
-            std::cerr << "Fabric profile JSON not found: " << profile_json << "\n";
+            set_install_error("Fabric profile JSON not found: " + profile_json.string());
             return "";
         }
 
@@ -1125,7 +1245,11 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
                     std::string base = lib.value("url", "https://maven.fabricmc.net/");
                     if (!base.empty() && base.back() != '/') base += '/';
                     std::cout << "Downloading Fabric library: " << rel << '\n';
-                    if (!download(base + rel, dest)) return "";
+                    if (!download(base + rel, dest)) {
+                        if (g_last_error.empty())
+                            set_install_error("Failed to download Fabric library: " + rel);
+                        return "";
+                    }
                 }
             }
         } catch (const std::exception& e) {
@@ -1136,7 +1260,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         std::cout << "✓ Fabric installed: " << found_folder << "\n";
         return found_folder;
     } catch (const std::exception& e) {
-        std::cerr << "Fabric install error: " << e.what() << '\n';
+        set_install_error(std::string("Fabric install error: ") + e.what());
         return "";
     }
 }
