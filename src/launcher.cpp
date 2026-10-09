@@ -98,7 +98,7 @@ static const L10n& l10n_en() {
            "Installing Vanilla %s...",
         "Installing Fabric for %s...",
              "Fabric installed: %s",
-               "Installation failed! Check the terminal.",
+               "Installation failed: %s",
          "Installing Sodium / Lithium / FerriteCore...",
                   "Mods failed (see terminal), launching without them",
              "Launching %s...",
@@ -151,7 +151,7 @@ static const L10n& l10n_ru() {
            "Установка Vanilla %s...",
         "Установка Fabric для %s...",
              "Fabric установлена: %s",
-               "Ошибка установки! Проверьте терминал.",
+               "Ошибка установки: %s",
          "Установка Sodium / Lithium / FerriteCore...",
                   "Моды не установились (см. терминал), запускаю без них",
              "Запуск %s...",
@@ -709,7 +709,11 @@ void Launcher::draw_ui() {
             }
             ImGui::ProgressBar(pr, ImVec2(-1, 20));
         } else {
-            if (!st.empty()) ImGui::TextDisabled("%s", st.c_str());
+            if (!st.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("%s", st.c_str());
+                ImGui::PopStyleColor();
+            }
             if (ImGui::Button(L.play.c_str(), ImVec2(-1, 40))) {
                 config_.nickname = nickname_buf_;
                 save_settings();
@@ -784,7 +788,11 @@ void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& 
     }
  
     if (!install_ok) {
-        set_status(L.install_failed, 0.0f);
+        std::string detail = MinecraftInstaller::last_error();
+        if (detail.empty()) detail = "unknown error";
+        std::string msg = sfmt(L.install_failed, detail);
+        LOG_ERROR(msg);
+        set_status(msg, 0.0f);
         is_working = false;
         return;
     }
