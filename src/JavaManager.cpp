@@ -1,5 +1,4 @@
 #include "JavaManager.h"
-#include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
 #include <cstdlib>
@@ -7,7 +6,6 @@
 #include <stdexcept>
 #include <filesystem>
 #include <vector>
-#include <map>
 #include <sstream>
 #include <fstream>
 #include <chrono>
@@ -108,78 +106,19 @@ void JavaManager::log(const std::string& message, bool isError)
     }
 }
 
-struct DistroInfo {
-    std::string name;
-    std::string pkgMgr;
-    std::string installCmdTemplate;
-};
-
-static DistroInfo detectDistro()
+static fs::path clauncher_home()
 {
 #ifdef _WIN32
-    return {"windows", "", ""};
+    const char* home = std::getenv("USERPROFILE");
+    if (home && *home) return fs::path(home) / ".clauncher";
+    const char* drive = std::getenv("HOMEDRIVE");
+    const char* path = std::getenv("HOMEPATH");
+    if (drive && path) return fs::path(std::string(drive) + path) / ".clauncher";
+    return fs::path(".clauncher");
 #else
-    std::ifstream file("/etc/os-release");
-    if (!file.is_open()) {
-        file.open("/usr/lib/os-release");
-        if (!file.is_open()) {
-            return {"unknown", "", ""};
-        }
-    }
-
-    std::map<std::string, std::string> vars;
-    std::string line;
-    while (std::getline(file, line)) {
-        size_t eq = line.find('=');
-        if (eq != std::string::npos) {
-            std::string key = line.substr(0, eq);
-            std::string value = line.substr(eq + 1);
-            if (!value.empty() && value.front() == '"') value = value.substr(1);
-            if (!value.empty() && value.back() == '"') value.pop_back();
-            vars[key] = value;
-        }
-    }
-
-    std::string id = vars["ID"];
-    std::string idLike = vars["ID_LIKE"];
-
-    DistroInfo distro;
-
-    if (id == "ubuntu" || id == "debian" || id == "linuxmint" ||
-        idLike.find("debian") != std::string::npos) {
-        distro.name = id;
-        distro.pkgMgr = "apt";
-        distro.installCmdTemplate = "sudo apt update && sudo apt install -y {package}";
-    }
-    else if (id == "fedora" || id == "rhel" || id == "centos" ||
-             idLike.find("fedora") != std::string::npos) {
-        distro.name = id;
-        distro.pkgMgr = "dnf";
-        distro.installCmdTemplate = "sudo dnf install -y {package}";
-    }
-    else if (id == "arch" || id == "manjaro" ||
-             idLike.find("arch") != std::string::npos) {
-        distro.name = id;
-        distro.pkgMgr = "pacman";
-        distro.installCmdTemplate = "sudo pacman -S --noconfirm {package}";
-    }
-    else if (id == "opensuse" || id == "opensuse-leap" || id == "opensuse-tumbleweed") {
-        distro.name = id;
-        distro.pkgMgr = "zypper";
-        distro.installCmdTemplate = "sudo zypper install -y {package}";
-    }
-    else if (id == "alpine") {
-        distro.name = id;
-        distro.pkgMgr = "apk";
-        distro.installCmdTemplate = "sudo apk add {package}";
-    }
-    else {
-        distro.name = id.empty() ? "unknown" : id;
-        distro.pkgMgr = "";
-        distro.installCmdTemplate = "";
-    }
-
-    return distro;
+    const char* home = std::getenv("HOME");
+    if (home && *home) return fs::path(home) / ".clauncher";
+    return fs::path(".clauncher");
 #endif
 }
 
@@ -305,7 +244,7 @@ void JavaManager::checkDependencies()
     if (std::system("command -v unzip >/dev/null 2>&1") != 0) {
         throw std::runtime_error(
             "unzip is not installed (needed to extract Minecraft native libraries). "
-            "Please install unzip, e.g.: sudo apt-get install unzip");
+            "Please install unzip.");
     }
 #endif
 }
@@ -350,123 +289,25 @@ int JavaManager::extractMajorJavaVersion(const std::string& versionOutput)
     }
 }
 
-bool JavaManager::findSystemJava(fs::path& foundPath, JavaVersion required) const
+JavaManager::JavaVersion JavaManager::javaVersionFromMajor(int major) const
 {
-#ifdef _WIN32
-    return false;
-#else
-
-
-
-
-
-
-    auto versionMatches = [](int sysVer, int needVer) {
-        return (sysVer == needVer) || (needVer >= 17 && sysVer > needVer);
-    };
-
-    std::string versionOutput = execCommandFirstLine("java -version 2>&1");
-    if (!versionOutput.empty()) {
-        int sysVer = extractMajorJavaVersion(versionOutput);
-        int needVer = 0;
-        switch (required) {
-            case JavaVersion::Java8:  needVer = 8; break;
-            case JavaVersion::Java17: needVer = 17; break;
-            case JavaVersion::Java21: needVer = 21; break;
-        }
-        if (versionMatches(sysVer, needVer)) {
-            foundPath = "/usr/bin/java";
-            return true;
-        }
+    switch (major) {
+        case 8:  return JavaVersion::Java8;
+        case 17: return JavaVersion::Java17;
+        case 21: return JavaVersion::Java21;
+        default:
+            throw std::runtime_error("Unsupported Java major: " + std::to_string(major));
     }
-
-    const std::vector<std::string> searchPaths = {
-        "/usr/bin/java",
-        "/usr/local/bin/java",
-        "/opt/java/bin/java",
-        "/snap/bin/java"
-    };
-
-    for (const auto& path : searchPaths) {
-        if (fileExists(path)) {
-            std::string cmd = path + " -version 2>&1";
-            std::string out = execCommandFirstLine(cmd);
-            if (!out.empty()) {
-                int sysVer = extractMajorJavaVersion(out);
-                int needVer = 0;
-                switch (required) {
-                    case JavaVersion::Java8:  needVer = 8; break;
-                    case JavaVersion::Java17: needVer = 17; break;
-                    case JavaVersion::Java21: needVer = 21; break;
-                }
-                if (versionMatches(sysVer, needVer)) {
-                    foundPath = path;
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
-#endif
 }
 
-void JavaManager::installSystemJava(JavaVersion required)
+int JavaManager::requiredMajor(const std::string& mcVersion) const
 {
-#ifndef _WIN32
-    DistroInfo distro = detectDistro();
-
-    if (distro.pkgMgr.empty()) {
-        throw std::runtime_error("Unsupported distribution: " + distro.name +
-                                ". Please install Java manually.");
+    switch (getRequiredJava(mcVersion)) {
+        case JavaVersion::Java8:  return 8;
+        case JavaVersion::Java17: return 17;
+        case JavaVersion::Java21: return 21;
     }
-
-    std::map<JavaVersion, std::string> packages;
-    if (distro.pkgMgr == "apt") {
-        packages[JavaVersion::Java8]  = "openjdk-8-jre-headless";
-        packages[JavaVersion::Java17] = "openjdk-17-jre-headless";
-        packages[JavaVersion::Java21] = "openjdk-21-jre-headless";
-    } else if (distro.pkgMgr == "dnf") {
-        packages[JavaVersion::Java8]  = "java-1.8.0-openjdk-headless";
-        packages[JavaVersion::Java17] = "java-17-openjdk-headless";
-        packages[JavaVersion::Java21] = "java-21-openjdk-headless";
-    } else if (distro.pkgMgr == "pacman") {
-        packages[JavaVersion::Java8]  = "jdk8-openjdk";
-        packages[JavaVersion::Java17] = "jdk17-openjdk";
-        packages[JavaVersion::Java21] = "jdk21-openjdk";
-    } else if (distro.pkgMgr == "zypper") {
-        packages[JavaVersion::Java8]  = "java-1_8_0-openjdk-headless";
-        packages[JavaVersion::Java17] = "java-17-openjdk-headless";
-        packages[JavaVersion::Java21] = "java-21-openjdk-headless";
-    } else if (distro.pkgMgr == "apk") {
-        packages[JavaVersion::Java8]  = "openjdk8-jre";
-        packages[JavaVersion::Java17] = "openjdk17-jre";
-        packages[JavaVersion::Java21] = "openjdk21-jre";
-    } else {
-        throw std::runtime_error("Unsupported package manager: " + distro.pkgMgr);
-    }
-
-    if (packages.find(required) == packages.end()) {
-        throw std::runtime_error("No package mapping for this Java version");
-    }
-
-    const std::string& pkgName = packages[required];
-
-    log("Installing " + pkgName + " via " + distro.pkgMgr);
-
-    std::string installCmd = distro.installCmdTemplate;
-    size_t pos = installCmd.find("{package}");
-    if (pos != std::string::npos) {
-        installCmd.replace(pos, 9, pkgName);
-    }
-
-    int result = std::system(installCmd.c_str());
-    if (result != 0) {
-        throw std::runtime_error("Package manager installation failed (exit code " + std::to_string(result) + ")");
-    }
-
-    log("Java installation via " + distro.pkgMgr + " complete.");
-#endif
+    throw std::runtime_error("Unsupported Java requirement");
 }
 
 void JavaManager::verifyJavaInstallation(const fs::path& javaBinary, JavaVersion expectedVersion)
@@ -666,7 +507,7 @@ void JavaManager::makeExecutable(const fs::path& javaBinary)
 
 JavaManager::JavaManager()
 {
-    fs::path base = launcher_paths::launcher_dir();
+    fs::path base = clauncher_home();
     runtimeDir = base / "runtime";
     logPath = base / "java-manager.log";
 
@@ -679,81 +520,51 @@ JavaManager::JavaManager()
     log("JavaManager initialized. Runtime dir: " + runtimeDir.string());
 }
 
-fs::path JavaManager::ensureJava(const std::string& mcVersion)
+fs::path JavaManager::ensureJava(int major)
 {
     try {
         checkDependencies();
-        log("Checking Java for Minecraft version: " + mcVersion);
-
-        const JavaVersion required = getRequiredJava(mcVersion);
+        const JavaVersion required = javaVersionFromMajor(major);
         const fs::path javaBinary = getJavaBinary(required);
-
-        const char* versionNames[] = {"Java 8", "Java 17", "Java 21"};
-        log("Required: " + std::string(versionNames[static_cast<int>(required)]));
-
-#ifdef _WIN32
+        log("Checking managed Java " + std::to_string(major) + ": " + javaBinary.string());
 
         if (fileExists(javaBinary)) {
             log("Using cached portable Java: " + javaBinary.string());
             return javaBinary;
-        }
-
-        log("Downloading portable Java for Windows...");
-        downloadJava(required);
-
-        if (!fileExists(javaBinary)) {
-            throw std::runtime_error("Unable to obtain Java for Windows.");
-        }
-
-        log("Java ready: " + javaBinary.string());
-        return javaBinary;
-
-#else
-
-        fs::path systemJavaPath;
-        if (findSystemJava(systemJavaPath, required)) {
-            log("Using system Java: " + systemJavaPath.string());
-            return systemJavaPath;
-        }
-
-        if (fileExists(javaBinary)) {
-            log("Using cached portable Java: " + javaBinary.string());
-            return javaBinary;
-        }
-
-        try {
-            DistroInfo distro = detectDistro();
-            log("Distribution detected: " + (distro.name.empty() ? "unknown" : distro.name));
-
-            if (!distro.pkgMgr.empty()) {
-                try {
-                    installSystemJava(required);
-                    if (findSystemJava(systemJavaPath, required)) {
-                        log("Java installed via " + distro.pkgMgr + ": " + systemJavaPath.string());
-                        return systemJavaPath;
-                    }
-                } catch (const std::exception& e) {
-                    log("Package manager installation failed: " + std::string(e.what()), true);
-                    log("Falling back to portable Java download.");
-                }
-            }
-        } catch (const std::exception& e) {
-            log("Distribution detection failed: " + std::string(e.what()), true);
-            log("Falling back to portable Java download.");
         }
 
         log("Downloading portable Java...");
         downloadJava(required);
 
         if (!fileExists(javaBinary)) {
-            throw std::runtime_error("Unable to obtain Java.");
+            throw std::runtime_error("Unable to obtain Java " + std::to_string(major));
         }
 
         log("Using portable Java: " + javaBinary.string());
         return javaBinary;
-#endif
     } catch (const std::exception& e) {
         log("JavaManager error: " + std::string(e.what()), true);
         throw;
     }
+}
+
+fs::path JavaManager::resolveJava(const JavaInstance& instance)
+{
+    if (!instance.manual_path.empty()) {
+        const fs::path& p = instance.manual_path;
+        if (fs::is_directory(p)) {
+#ifdef _WIN32
+            fs::path bin = p / "bin" / "java.exe";
+            if (!fileExists(bin)) bin = p / "java.exe";
+#else
+            fs::path bin = p / "bin" / "java";
+            if (!fileExists(bin)) bin = p / "java";
+#endif
+            if (fileExists(bin)) return bin;
+        } else if (fileExists(p)) {
+            return p;
+        }
+        throw std::runtime_error("Manual Java path not found: " + p.string());
+    }
+    return ensureJava(instance.major);
 }
