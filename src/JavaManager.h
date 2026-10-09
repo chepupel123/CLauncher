@@ -3,12 +3,19 @@
 #include <string>
 #include <cstddef>
 
+struct JavaInstance {
+    int major = 17;
+    std::filesystem::path manual_path;
+};
+
 class JavaManager
 {
 public:
     JavaManager();
 
-    std::filesystem::path ensureJava(const std::string& mcVersion);
+    int requiredMajor(const std::string& mcVersion) const;
+    std::filesystem::path ensureJava(int major);
+    std::filesystem::path resolveJava(const JavaInstance& instance);
 
 private:
     enum class JavaVersion
@@ -22,13 +29,10 @@ private:
     std::filesystem::path logPath;
 
     JavaVersion getRequiredJava(const std::string& mcVersion) const;
+    JavaVersion javaVersionFromMajor(int major) const;
 
     std::filesystem::path getJavaDirectory(JavaVersion version) const;
     std::filesystem::path getJavaBinary(JavaVersion version) const;
-
-    bool findSystemJava(std::filesystem::path& foundPath, JavaVersion required) const;
-
-    void installSystemJava(JavaVersion required);
 
     void downloadJava(JavaVersion version);
 
