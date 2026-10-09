@@ -513,7 +513,9 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     JavaManager javaManager;
     std::string java_path;
     try {
-        java_path = javaManager.ensureJava(version).string();
+        JavaInstance inst;
+        inst.major = javaManager.requiredMajor(version);
+        java_path = javaManager.resolveJava(inst).string();
     } catch (const std::exception& e) {
         LOG_ERROR("Не удалось получить Java: " << e.what());
         return false;
