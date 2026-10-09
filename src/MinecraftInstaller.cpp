@@ -637,7 +637,7 @@ namespace
         bool index_ok = fs::exists(index_file) &&
                         (index_sha.empty() || verify_sha1(index_file, index_sha));
         if (!index_ok) {
-            std::cout << "Downloading asset index...\n";
+            LOG_INFO("Downloading asset index...");
             if (!download(asset_index_url, index_file)) return false;
             if (!index_sha.empty() && !verify_sha1(index_file, index_sha)) {
                 std::cerr << "SHA1 mismatch: asset index " << asset_index_id << '\n';
@@ -689,7 +689,7 @@ namespace
 #endif
 
         std::vector<fs::path> native_jars;
-        bool downloaded_any = false;
+        std::vector<std::string> jar_ids;
 
         for (const auto& library : metadata["libraries"]) {
             if (!library_allowed(library)) continue;
@@ -705,7 +705,7 @@ namespace
             bool jar_ok = fs::exists(dest_jar) &&
                           (native_sha.empty() || verify_sha1(dest_jar, native_sha));
             if (!jar_ok) {
-                std::cout << "Downloading natives: " << path << "\n";
+                LOG_INFO("Downloading natives: " << path);
                 if (!download(url, dest_jar)) return false;
                 if (!native_sha.empty() && !verify_sha1(dest_jar, native_sha)) {
                     std::cerr << "Natives SHA1 mismatch, retrying: " << path << "\n";
@@ -714,15 +714,36 @@ namespace
                         return false;
                     }
                 }
-                downloaded_any = true;
             }
             native_jars.push_back(dest_jar);
+            std::string id = native_sha;
+            if (id.empty() && !sha1_of_file(dest_jar, id))
+                id = dest_jar.filename().string();
+            jar_ids.push_back(id + " " + dest_jar.filename().string());
         }
 
+        if (native_jars.empty()) return true;
 
-
-        bool natives_empty = fs::is_empty(natives_dir);
-        if (!downloaded_any && !natives_empty) return true;
+        std::sort(jar_ids.begin(), jar_ids.end());
+        fs::path marker = natives_dir / ".extracted-jars";
+        bool marker_ok = false;
+        if (fs::exists(marker)) {
+            std::vector<std::string> saved;
+            std::ifstream in(marker);
+            std::string line;
+            while (std::getline(in, line)) {
+                if (!line.empty()) saved.push_back(line);
+            }
+            std::sort(saved.begin(), saved.end());
+            marker_ok = (saved == jar_ids);
+        }
+        bool natives_have_files = false;
+        for (const auto& entry : fs::directory_iterator(natives_dir)) {
+            if (entry.path().filename() == ".extracted-jars") continue;
+            natives_have_files = true;
+            break;
+        }
+        if (marker_ok && natives_have_files) return true;
 
         for (const auto& jar : native_jars) {
 #ifdef _WIN32
@@ -741,6 +762,10 @@ namespace
 #endif
                 return false;
             }
+        }
+        std::ofstream marker_out(marker);
+        if (marker_out) {
+            for (const auto& line : jar_ids) marker_out << line << '\n';
         }
         return true;
     }
@@ -778,7 +803,7 @@ bool MinecraftInstaller::install(const std::string& version)
         if (fs::exists(version_json) && fs::exists(client_jar)) {
 
 
-            std::cout << "Minecraft " << version << " is already downloaded, verifying...\n";
+            LOG_INFO("Minecraft " << version << " is already downloaded, verifying...");
             try {
                 std::ifstream file(version_json);
                 if (!file) throw std::runtime_error("cannot open");
@@ -803,7 +828,7 @@ bool MinecraftInstaller::install(const std::string& version)
             }
 
             report_progress(2, "Version metadata...");
-            std::cout << "Downloading Minecraft " << version << " metadata...\n";
+            LOG_INFO("Downloading Minecraft " << version << " metadata...");
             fs::create_directories(version_dir);
             metadata = download_json(version_url);
             {
@@ -819,7 +844,7 @@ bool MinecraftInstaller::install(const std::string& version)
             std::string client_url = metadata["downloads"]["client"]["url"];
             std::string client_sha = metadata["downloads"]["client"].value("sha1", std::string());
             report_progress(6, "Downloading client...");
-            std::cout << "Downloading Minecraft client...\n";
+            LOG_INFO("Downloading Minecraft client...");
             if (!download(client_url, client_jar)) return false;
             if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
                 std::cerr << "Client SHA1 mismatch, retrying download...\n";
@@ -855,7 +880,7 @@ bool MinecraftInstaller::install(const std::string& version)
         if (!ensure_natives(version_dir, metadata)) return false;
         report_progress(98, "Done");
 
-        std::cout << "Minecraft " << version << " installed successfully\n";
+        LOG_INFO("Minecraft " << version << " installed successfully");
         return true;
     }
     catch (const std::exception& e) {
@@ -904,7 +929,16 @@ bool MinecraftInstaller::installPerformanceMods(const std::string& fabric_versio
                 return false;
             }
 
-            const json& v = versions[0];
+            const json* latest = &versions[0];
+            std::string latest_date = versions[0].value("date_published", std::string());
+            for (const auto& ver : versions) {
+                std::string date = ver.value("date_published", std::string());
+                if (date > latest_date) {
+                    latest = &ver;
+                    latest_date = std::move(date);
+                }
+            }
+            const json& v = *latest;
             const json* file = nullptr;
             if (v.contains("files") && v["files"].is_array()) {
                 for (const auto& f : v["files"]) {
@@ -971,6 +1005,23 @@ std::string MinecraftInstaller::findFabricDir(const std::string& mc_version)
     return best;
 }
 
+static fs::path clauncher_cache_dir()
+{
+#ifdef _WIN32
+    const char* home = std::getenv("USERPROFILE");
+    if (home && *home) return fs::path(home) / ".clauncher" / "cache";
+    const char* drive = std::getenv("HOMEDRIVE");
+    const char* path = std::getenv("HOMEPATH");
+    if (drive && path)
+        return fs::path(std::string(drive) + path) / ".clauncher" / "cache";
+    return fs::path(".clauncher") / "cache";
+#else
+    const char* home = std::getenv("HOME");
+    if (home && *home) return fs::path(home) / ".clauncher" / "cache";
+    return fs::path(".clauncher") / "cache";
+#endif
+}
+
 std::string MinecraftInstaller::installFabric(const std::string& version)
 {
     try {
@@ -983,9 +1034,10 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         }
 
 
-        fs::path profiles_path = minecraft_dir / "launcher_profiles.json";
+        fs::path profiles_path = clauncher_cache_dir() / "launcher_profiles.json";
         if (!fs::exists(profiles_path)) {
             std::cout << "Creating launcher_profiles.json...\n";
+            fs::create_directories(profiles_path.parent_path());
             std::ofstream profiles(profiles_path);
             if (!profiles.is_open()) { std::cerr << "Failed to create launcher_profiles.json\n"; return ""; }
             profiles << "{\n"
