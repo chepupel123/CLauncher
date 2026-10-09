@@ -21,6 +21,9 @@ namespace MinecraftInstaller
     bool install(const std::string& version);
     std::string installFabric(const std::string& version);
 
+    // Причина последнего сбоя install / installFabric. Пусто, если её не было.
+    std::string last_error();
+
     bool installPerformanceMods(const std::string& fabric_version_name,
                                 const std::string& mc_version);
     std::string findFabricDir(const std::string& mc_version);
