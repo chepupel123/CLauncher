@@ -1,4 +1,5 @@
 #include "JavaManager.h"
+#include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
 #include <cstdlib>
@@ -104,22 +105,6 @@ void JavaManager::log(const std::string& message, bool isError)
     } else {
         std::cout << message << "\n";
     }
-}
-
-static fs::path clauncher_home()
-{
-#ifdef _WIN32
-    const char* home = std::getenv("USERPROFILE");
-    if (home && *home) return fs::path(home) / ".clauncher";
-    const char* drive = std::getenv("HOMEDRIVE");
-    const char* path = std::getenv("HOMEPATH");
-    if (drive && path) return fs::path(std::string(drive) + path) / ".clauncher";
-    return fs::path(".clauncher");
-#else
-    const char* home = std::getenv("HOME");
-    if (home && *home) return fs::path(home) / ".clauncher";
-    return fs::path(".clauncher");
-#endif
 }
 
 std::string JavaManager::shellQuote(const std::string& value)
@@ -507,9 +492,8 @@ void JavaManager::makeExecutable(const fs::path& javaBinary)
 
 JavaManager::JavaManager()
 {
-    fs::path base = clauncher_home();
-    runtimeDir = base / "runtime";
-    logPath = base / "java-manager.log";
+    runtimeDir = launcher_paths::runtime_dir();
+    logPath = launcher_paths::launcher_dir() / "java-manager.log";
 
     std::error_code ec;
     fs::create_directories(runtimeDir, ec);
