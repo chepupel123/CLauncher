@@ -698,10 +698,12 @@ void Launcher::draw_ui() {
                     ImGui::Text("  %s", buf);
                 }
                 int eta = download_eta_seconds();
-                if (eta > 0) {
+                ImGui::SameLine();
+                if (eta < 0) {
+                    ImGui::TextUnformatted("  —");
+                } else if (eta > 0) {
                     int m = eta / 60;
                     int s = eta % 60;
-                    ImGui::SameLine();
                     char ebuf[64];
                     std::snprintf(ebuf, sizeof(ebuf), L.dl_eta_fmt.c_str(), m, s);
                     ImGui::Text("  %s", ebuf);
