@@ -1099,23 +1099,6 @@ std::string MinecraftInstaller::findFabricDir(const std::string& mc_version)
     return best;
 }
 
-static fs::path clauncher_cache_dir()
-{
-#ifdef _WIN32
-    const char* home = std::getenv("USERPROFILE");
-    if (home && *home) return fs::path(home) / ".clauncher" / "cache";
-    const char* drive = std::getenv("HOMEDRIVE");
-    const char* path = std::getenv("HOMEPATH");
-    if (drive && path)
-        return fs::path(std::string(drive) + path) / ".clauncher" / "cache";
-    return fs::path(".clauncher") / "cache";
-#else
-    const char* home = std::getenv("HOME");
-    if (home && *home) return fs::path(home) / ".clauncher" / "cache";
-    return fs::path(".clauncher") / "cache";
-#endif
-}
-
 std::string MinecraftInstaller::installFabric(const std::string& version)
 {
     try {
@@ -1129,7 +1112,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         }
 
 
-        fs::path profiles_path = clauncher_cache_dir() / "launcher_profiles.json";
+        fs::path profiles_path = launcher_paths::cache_dir() / "launcher_profiles.json";
         if (!fs::exists(profiles_path)) {
             std::cout << "Creating launcher_profiles.json...\n";
             fs::create_directories(profiles_path.parent_path());
@@ -1175,7 +1158,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
 
         report_progress(35, "Installing Fabric...");
         std::cout << "Installing Fabric...\n";
-        fs::path fabric_log = clauncher_cache_dir() / "fabric-installer.log";
+        fs::path fabric_log = launcher_paths::cache_dir() / "fabric-installer.log";
         fs::create_directories(fabric_log.parent_path());
         std::string cmd = "\"" + java_cmd + "\" -jar \"" + installer_path.string() +
                           "\" client -dir \"" + minecraft_dir.string() +
