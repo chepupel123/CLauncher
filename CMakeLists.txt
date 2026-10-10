@@ -12,6 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(glfw3 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(nlohmann_json 3.2.0 QUIET)
 find_package(PkgConfig REQUIRED)
@@ -94,6 +95,8 @@ else()
         Threads::Threads
     )
 endif()
+
+target_link_libraries(CLauncher PRIVATE OpenSSL::Crypto)
 
 # ========== TLS CAs ON WINDOWS ==========
 # CI packaging script (build.yml) finds ca-certificates in MSYS2 and copies
