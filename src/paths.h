@@ -74,14 +74,22 @@ inline std::filesystem::path minecraft_dir() {
 
 inline std::filesystem::path launcher_dir() {
 #ifdef _WIN32
-    return appdata_dir() / "minecraft-launcher";
+    return appdata_dir() / "CLauncher";
 #else
-    return home_dir() / ".minecraft-launcher";
+    return home_dir() / ".clauncher";
 #endif
 }
 
+inline std::filesystem::path runtime_dir() {
+    return launcher_dir() / "runtime";
+}
+
+inline std::filesystem::path cache_dir() {
+    return launcher_dir() / "cache";
+}
+
 inline std::filesystem::path log_dir() {
-    return launcher_dir();
+    return launcher_dir() / "logs";
 }
 
 } // namespace launcher_paths
