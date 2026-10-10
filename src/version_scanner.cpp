@@ -1,7 +1,7 @@
 #include "version_scanner.h"
 #include "paths.h"
+#include "logger.h"
 #include <filesystem>
-#include <iostream>
 #include <algorithm>
 
 namespace fs = std::filesystem;
@@ -16,7 +16,7 @@ std::vector<std::string> VersionScanner::scan_versions() {
 
     try {
         if (!fs::exists(versions_dir)) {
-            std::cerr << "Versions dir not found: " << versions_dir << "\n";
+            LOG_WARN("Versions dir not found: " << versions_dir);
             return versions;
         }
 
@@ -34,10 +34,10 @@ std::vector<std::string> VersionScanner::scan_versions() {
         std::sort(versions.begin(), versions.end());
         std::reverse(versions.begin(), versions.end());
 
-        std::cout << "Found " << versions.size() << " Minecraft versions\n";
+        LOG_INFO("Found " << versions.size() << " Minecraft versions");
 
     } catch (const std::exception& e) {
-        std::cerr << "Version scan error: " << e.what() << "\n";
+        LOG_ERROR("Version scan error: " << e.what());
     }
 
     return versions;
