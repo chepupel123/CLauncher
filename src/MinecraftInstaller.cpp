@@ -7,18 +7,18 @@
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
+#include <openssl/evp.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -274,77 +274,46 @@ namespace
     }
 
 
-    class Sha1 {
-    public:
-        Sha1() { reset(); }
-        void reset() {
-            h_[0] = 0x67452301u; h_[1] = 0xEFCDAB89u; h_[2] = 0x98BADCFEu;
-            h_[3] = 0x10325476u; h_[4] = 0xC3D2E1F0u;
-            len_ = 0; buf_len_ = 0;
-        }
-        void update(const void* data, size_t n) {
-            const uint8_t* p = static_cast<const uint8_t*>(data);
-            len_ += n;
-            while (n > 0) {
-                size_t take = std::min(n, size_t(64) - buf_len_);
-                std::memcpy(buf_ + buf_len_, p, take);
-                buf_len_ += take; p += take; n -= take;
-                if (buf_len_ == 64) { process(buf_); buf_len_ = 0; }
-            }
-        }
-        std::string hex() {
-            uint64_t bits = len_ * 8;
-            uint8_t pad = 0x80;
-            update(&pad, 1);
-            uint8_t z = 0;
-            while (buf_len_ != 56) update(&z, 1);
-            uint8_t lenb[8];
-            for (int i = 0; i < 8; ++i) lenb[i] = uint8_t(bits >> (56 - 8 * i));
-            update(lenb, 8);
-            char out[41];
-            for (int i = 0; i < 5; ++i) std::snprintf(out + i * 8, 9, "%08x", h_[i]);
-            return std::string(out, 40);
-        }
-    private:
-        void process(const uint8_t* p) {
-            uint32_t w[80];
-            for (int i = 0; i < 16; ++i)
-                w[i] = (uint32_t(p[4 * i]) << 24) | (uint32_t(p[4 * i + 1]) << 16) |
-                       (uint32_t(p[4 * i + 2]) << 8) | uint32_t(p[4 * i + 3]);
-            for (int i = 16; i < 80; ++i) {
-                uint32_t v = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
-                w[i] = (v << 1) | (v >> 31);
-            }
-            uint32_t a = h_[0], b = h_[1], c = h_[2], d = h_[3], e = h_[4];
-            for (int i = 0; i < 80; ++i) {
-                uint32_t f, k;
-                if (i < 20)      { f = (b & c) | ((~b) & d);      k = 0x5A827999u; }
-                else if (i < 40) { f = b ^ c ^ d;                 k = 0x6ED9EBA1u; }
-                else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDCu; }
-                else             { f = b ^ c ^ d;                 k = 0xCA62C1D6u; }
-                uint32_t t = ((a << 5) | (a >> 27)) + f + e + k + w[i];
-
-                e = d; d = c; c = (b << 30) | (b >> 2); b = a; a = t;
-            }
-            h_[0] += a; h_[1] += b; h_[2] += c; h_[3] += d; h_[4] += e;
-        }
-        uint32_t h_[5];
-        uint64_t len_;
-        size_t buf_len_;
-        uint8_t buf_[64];
-    };
-
     bool sha1_of_file(const fs::path& path, std::string& out_hex)
     {
-        std::ifstream in(path, std::ios::binary);
-        if (!in) return false;
-        Sha1 h;
-        char buf[8192];
-        while (in) {
-            in.read(buf, sizeof(buf));
-            if (in.gcount() > 0) h.update(buf, static_cast<size_t>(in.gcount()));
+#ifdef _WIN32
+        FILE* file = _wfopen(path.c_str(), L"rb");
+#else
+        FILE* file = fopen(path.c_str(), "rb");
+#endif
+        if (!file) return false;
+
+        std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+            EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+        if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha1(), nullptr) != 1) {
+            fclose(file);
+            return false;
         }
-        out_hex = h.hex();
+
+        unsigned char buf[8192];
+        size_t nread = 0;
+        while ((nread = fread(buf, 1, sizeof(buf), file)) > 0) {
+            if (EVP_DigestUpdate(ctx.get(), buf, nread) != 1) {
+                fclose(file);
+                return false;
+            }
+        }
+        if (ferror(file)) {
+            fclose(file);
+            return false;
+        }
+        fclose(file);
+
+        unsigned char md[EVP_MAX_MD_SIZE];
+        unsigned int md_len = 0;
+        if (EVP_DigestFinal_ex(ctx.get(), md, &md_len) != 1) return false;
+
+        static constexpr char hexdigits[] = "0123456789abcdef";
+        out_hex.resize(static_cast<size_t>(md_len) * 2);
+        for (unsigned int i = 0; i < md_len; ++i) {
+            out_hex[i * 2]     = hexdigits[(md[i] >> 4) & 0x0F];
+            out_hex[i * 2 + 1] = hexdigits[md[i] & 0x0F];
+        }
         return true;
     }
 
@@ -420,7 +389,13 @@ namespace
                 g_verify_inflight.fetch_add(1, std::memory_order_relaxed);
                 ok = verify_sha1(tmp, it.sha1);
                 g_verify_inflight.fetch_sub(1, std::memory_order_relaxed);
-                if (!ok) LOG_WARN("SHA1 mismatch for " << it.dest.filename().string());
+                if (!ok) {
+                    std::error_code ec;
+                    LOG_WARN("SHA1 mismatch for " << it.dest.filename().string()
+                        << " (size=" << fs::file_size(tmp, ec)
+                        << ", expected=" << it.size
+                        << ", url=" << it.url << ")");
+                }
             }
             if (ok) {
                 std::error_code ec;
@@ -736,7 +711,7 @@ namespace
                 LOG_INFO("Downloading natives: " << path);
                 if (!download(url, dest_jar)) return false;
                 if (!native_sha.empty() && !verify_sha1(dest_jar, native_sha)) {
-                    std::cerr << "Natives SHA1 mismatch, retrying: " << path << "\n";
+                    LOG_WARN("Natives SHA1 mismatch, retrying: " << path);
                     if (!download(url, dest_jar)) return false;
                     if (!verify_sha1(dest_jar, native_sha)) {
                         set_install_error("Natives SHA1 mismatch persists: " + path);
