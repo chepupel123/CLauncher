@@ -26,7 +26,6 @@ private:
     };
 
     std::filesystem::path runtimeDir;
-    std::filesystem::path logPath;
 
     JavaVersion getRequiredJava(const std::string& mcVersion) const;
     JavaVersion javaVersionFromMajor(int major) const;
