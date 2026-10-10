@@ -12,9 +12,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -52,10 +52,12 @@ namespace {
     int g_stage_pct_from = -1;
     int g_stage_pct_to = -1;
 
-    std::chrono::steady_clock::time_point last_speed_check{};
-    size_t last_bytes_done = 0;
-    bool g_speed_started = false;
-    std::deque<double> g_speed_window;
+    std::chrono::steady_clock::time_point g_stage_start_time = std::chrono::steady_clock::now();
+    size_t g_stage_bytes_at_start = 0;
+
+    constexpr double kSpeedWarmupSec = 10.0;
+    constexpr double kMinEtaSpeedMbps = 0.1;
+    constexpr int kMaxEtaSec = 86400;
 
     thread_local bool t_count_bytes = false;
     thread_local size_t t_attempt_bytes = 0;
@@ -69,10 +71,8 @@ namespace {
     }
 
     void reset_speed_state() {
-        last_speed_check = {};
-        last_bytes_done = 0;
-        g_speed_started = false;
-        g_speed_window.clear();
+        g_stage_start_time = std::chrono::steady_clock::now();
+        g_stage_bytes_at_start = 0;
         g_bytes_done.store(0, std::memory_order_relaxed);
         g_verify_inflight.store(0, std::memory_order_relaxed);
         g_stage_pct_from = -1;
@@ -82,38 +82,29 @@ namespace {
         MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
     }
 
-    // Среднее за ~10 с (40 замеров по 250 мс). Пока замеров < 4 — скорость не публикуем.
+    // Средняя скорость с начала этапа: (bytes_done - start) / elapsed.
+    // Первые 10 с не публикуем. ETA скрыт при скорости < 0.1 МБ/с или > 24 ч.
     void update_speed_eta(size_t bytes_done, size_t bytes_total) {
         if (bytes_total == 0) return;
+        if (bytes_done > bytes_total) bytes_done = bytes_total;
 
-        auto now = std::chrono::steady_clock::now();
-        if (!g_speed_started) {
-            last_speed_check = now;
-            last_bytes_done = bytes_done;
-            g_speed_started = true;
-            return;
-        }
-        double elapsed = std::chrono::duration<double>(now - last_speed_check).count();
-        if (elapsed < 0.25) return;
+        bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
+        double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - g_stage_start_time).count();
 
-        size_t delta = (bytes_done >= last_bytes_done) ? (bytes_done - last_bytes_done) : 0;
-        last_speed_check = now;
-        last_bytes_done = bytes_done;
-
-        // Пока байты не пошли, нули в среднее не кладём: первые замеры врут.
-        if (g_speed_window.empty() && delta == 0) {
-            bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
+        if (elapsed < kSpeedWarmupSec) {
+            MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
+            MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
             MinecraftInstaller::g_download_checking.store(hashing, std::memory_order_relaxed);
             return;
         }
 
-        double speed_mbps = (static_cast<double>(delta) / 1024.0 / 1024.0) / elapsed;
-        g_speed_window.push_back(speed_mbps);
-        while (g_speed_window.size() > 40) g_speed_window.pop_front();
+        size_t transferred = (bytes_done >= g_stage_bytes_at_start)
+            ? (bytes_done - g_stage_bytes_at_start) : 0;
+        double speed_mbps = (static_cast<double>(transferred) / 1024.0 / 1024.0) / elapsed;
+        MinecraftInstaller::g_download_speed_mbps.store(speed_mbps, std::memory_order_relaxed);
 
-        bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
-        bool idle = speed_mbps < 0.01;
-        if (hashing && idle) {
+        if (hashing && speed_mbps < kMinEtaSpeedMbps) {
             MinecraftInstaller::g_download_checking.store(true, std::memory_order_relaxed);
             MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
             MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
@@ -121,27 +112,17 @@ namespace {
         }
         MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
 
-        if (g_speed_window.size() < 4) {
-            MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
+        if (speed_mbps < kMinEtaSpeedMbps || bytes_done >= bytes_total) {
             MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
             return;
         }
 
-        double sum = 0.0;
-        for (double s : g_speed_window) sum += s;
-        double avg = sum / static_cast<double>(g_speed_window.size());
-        MinecraftInstaller::g_download_speed_mbps.store(avg, std::memory_order_relaxed);
-
+        size_t remaining = bytes_total - bytes_done;
+        double speed_bps = speed_mbps * 1024.0 * 1024.0;
+        double eta_d = static_cast<double>(remaining) / speed_bps;
         int eta = -1;
-        if (bytes_total > bytes_done && avg > 0.0) {
-            size_t remaining = bytes_total - bytes_done;
-            double speed_bps = avg * 1024.0 * 1024.0;
-            if (speed_bps > 1.0) {
-                double eta_d = static_cast<double>(remaining) / speed_bps;
-                if (eta_d >= 0.0 && eta_d < 1.0e8)
-                    eta = static_cast<int>(eta_d);
-            }
-        }
+        if (eta_d > 0.0 && eta_d <= static_cast<double>(kMaxEtaSec))
+            eta = static_cast<int>(std::ceil(eta_d));
         MinecraftInstaller::g_download_eta_seconds.store(eta, std::memory_order_relaxed);
     }
 }
@@ -499,10 +480,18 @@ namespace
         for (unsigned w = 0; w < workers; ++w) pool.emplace_back(worker);
 
 
-        auto pct_now = [&](size_t d) -> int {
+        auto pct_now = [&](size_t files_done) -> int {
+            double frac = 0.0;
+            if (bytes_total > 0) {
+                size_t bytes_done = g_bytes_done.load(std::memory_order_relaxed);
+                if (bytes_done > bytes_total) bytes_done = bytes_total;
+                frac = static_cast<double>(bytes_done) / static_cast<double>(bytes_total);
+            } else if (total > 0) {
+                frac = static_cast<double>(files_done) / static_cast<double>(total);
+            }
             if (pct_from < 0 || pct_to <= pct_from)
-                return static_cast<int>(100 * d / total);
-            return pct_from + static_cast<int>((pct_to - pct_from) * d / total);
+                return static_cast<int>(100.0 * frac);
+            return pct_from + static_cast<int>((pct_to - pct_from) * frac);
         };
         auto publish = [&](size_t d) {
             if (bytes_total == 0) {
@@ -510,9 +499,9 @@ namespace
                 return;
             }
             size_t bytes_done = g_bytes_done.load(std::memory_order_relaxed);
+            if (bytes_done > bytes_total) bytes_done = bytes_total;
             update_speed_eta(bytes_done, bytes_total);
             if (!g_progress_fn) return;
-            if (bytes_done > bytes_total) bytes_done = bytes_total;
             g_progress_fn(bytes_done, bytes_total, stage_label.c_str(), g_progress_user);
         };
         while (done.load(std::memory_order_relaxed) < total) {
@@ -864,7 +853,7 @@ bool MinecraftInstaller::install(const std::string& version)
                 if (!file) throw std::runtime_error("cannot open");
                 file >> metadata;
             } catch (const std::exception& e) {
-                std::cerr << "version.json corrupted (" << e.what() << "), re-downloading\n";
+                LOG_WARN("version.json corrupted (" << e.what() << "), re-downloading");
                 fresh = true;
             }
         } else {
@@ -905,7 +894,7 @@ bool MinecraftInstaller::install(const std::string& version)
             LOG_INFO("Downloading Minecraft client...");
             if (!download(client_url, client_jar)) return false;
             if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
-                std::cerr << "Client SHA1 mismatch, retrying download...\n";
+                LOG_WARN("Client SHA1 mismatch, retrying download...");
                 if (!download(client_url, client_jar)) return false;
                 if (!verify_sha1(client_jar, client_sha)) {
                     set_install_error("Client SHA1 mismatch persists");
@@ -925,7 +914,7 @@ bool MinecraftInstaller::install(const std::string& version)
                 client_sha = metadata["downloads"]["client"].value("sha1", std::string());
             if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
                 report_progress(4, "Re-downloading client...");
-                std::cerr << "Client JAR corrupted (SHA1 mismatch), re-downloading...\n";
+                LOG_WARN("Client JAR corrupted (SHA1 mismatch), re-downloading...");
                 std::string client_url = metadata["downloads"]["client"]["url"];
                 if (!download(client_url, client_jar)) return false;
                 if (!verify_sha1(client_jar, client_sha)) {
@@ -974,7 +963,7 @@ bool MinecraftInstaller::installPerformanceMods(const std::string& fabric_versio
                 std::ifstream mf(manifest_path);
                 mf >> manifest;
             } catch (...) {
-                std::cerr << "WARNING: mods manifest corrupted, starting fresh\n";
+                LOG_WARN("mods manifest corrupted, starting fresh");
                 manifest = json::object();
             }
         }
@@ -993,8 +982,8 @@ bool MinecraftInstaller::installPerformanceMods(const std::string& fabric_versio
                 "/version?game_versions=%5B%22" + mc_version + "%22%5D&loaders=%5B%22fabric%22%5D";
             json versions = download_json(api_url);
             if (!versions.is_array() || versions.empty()) {
-                std::cerr << "Modrinth: no build of " << title << " for Minecraft "
-                          << mc_version << "\n";
+                LOG_ERROR("Modrinth: no build of " << title << " for Minecraft "
+                          << mc_version);
                 return false;
             }
 
@@ -1016,7 +1005,7 @@ bool MinecraftInstaller::installPerformanceMods(const std::string& fabric_versio
                 if (!file && !v["files"].empty()) file = &v["files"][0];
             }
             if (!file || !file->contains("url")) {
-                std::cerr << "Modrinth: malformed response for " << title << "\n";
+                LOG_ERROR("Modrinth: malformed response for " << title);
                 return false;
             }
 
@@ -1032,8 +1021,7 @@ bool MinecraftInstaller::installPerformanceMods(const std::string& fabric_versio
             if (!old_file.empty() && old_file != it.dest.filename().string()) {
                 std::error_code ec;
                 fs::remove(mods_dir / old_file, ec);
-                if (!ec) std::cout << "Removed old version of " << title << ": "
-                                   << old_file << "\n";
+                if (!ec) LOG_INFO("Removed old version of " << title << ": " << old_file);
             }
             new_manifest[slug] = it.dest.filename().string();
             items.push_back(std::move(it));
@@ -1043,10 +1031,10 @@ bool MinecraftInstaller::installPerformanceMods(const std::string& fabric_versio
 
         std::ofstream mf(manifest_path);
         mf << new_manifest.dump(2);
-        std::cout << "✓ Performance mods installed: Sodium, Lithium, FerriteCore\n";
+        LOG_INFO("Performance mods installed: Sodium, Lithium, FerriteCore");
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Mods install error: " << e.what() << '\n';
+        LOG_ERROR("Mods install error: " << e.what());
         return false;
     }
 }
@@ -1087,29 +1075,10 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         }
 
 
-        fs::path profiles_path = launcher_paths::cache_dir() / "launcher_profiles.json";
-        if (!fs::exists(profiles_path)) {
-            std::cout << "Creating launcher_profiles.json...\n";
-            fs::create_directories(profiles_path.parent_path());
-            std::ofstream profiles(profiles_path);
-            if (!profiles.is_open()) {
-                set_install_error("Failed to create launcher_profiles.json");
-                return "";
-            }
-            profiles << "{\n"
-                     << "  \"profiles\": {},\n"
-                     << "  \"settings\": {},\n"
-                     << "  \"selectedProfile\": \"\",\n"
-                     << "  \"clientToken\": \"\",\n"
-                     << "  \"authenticationDatabase\": {}\n"
-                     << "}\n";
-        }
-
-
         fs::path launcher_dir = launcher_paths::launcher_dir();
         fs::path installer_path = launcher_dir / "fabric-installer.jar";
         if (!fs::exists(installer_path)) {
-            std::cout << "Downloading Fabric Installer...\n";
+            LOG_INFO("Downloading Fabric Installer...");
             fs::create_directories(launcher_dir);
             std::string url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar";
             if (!download(url, installer_path)) {
@@ -1121,7 +1090,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
 
 
         std::string loader_version = FabricVersionMap::getLoaderForVersion(version);
-        std::cout << "Using Fabric loader " << loader_version << "\n";
+        LOG_INFO("Using Fabric loader " << loader_version);
 
 
         std::string java_cmd = "java";
@@ -1132,7 +1101,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         } catch (...) {}
 
         report_progress(35, "Installing Fabric...");
-        std::cout << "Installing Fabric...\n";
+        LOG_INFO("Installing Fabric...");
         fs::path fabric_log = launcher_paths::cache_dir() / "fabric-installer.log";
         fs::create_directories(fabric_log.parent_path());
         std::string cmd = "\"" + java_cmd + "\" -jar \"" + installer_path.string() +
@@ -1171,10 +1140,10 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
 
         fs::path target_jar = fabric_dir / (found_folder + ".jar");
         if (fs::exists(target_jar)) {
-            std::cerr << "WARNING: found phantom " << target_jar << "\n"
-                      << "  (this file must NOT exist — it caused\n"
-                      << "  IllegalStateException: trying to load FabricLoaderImpl...)\n"
-                      << "  Removing.\n";
+            LOG_WARN("found phantom " << target_jar
+                     << " (this file must NOT exist — it caused"
+                     << " IllegalStateException: trying to load FabricLoaderImpl...)."
+                     << " Removing.");
             std::error_code ec;
             fs::remove(target_jar, ec);
         }
@@ -1203,7 +1172,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
                     if (fs::exists(minecraft_dir / "versions" / version / "libraries" / rel)) continue;
                     std::string base = lib.value("url", "https://maven.fabricmc.net/");
                     if (!base.empty() && base.back() != '/') base += '/';
-                    std::cout << "Downloading Fabric library: " << rel << '\n';
+                    LOG_INFO("Downloading Fabric library: " << rel);
                     if (!download(base + rel, dest)) {
                         if (g_last_error.empty())
                             set_install_error("Failed to download Fabric library: " + rel);
@@ -1212,11 +1181,11 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
                 }
             }
         } catch (const std::exception& e) {
-            std::cerr << "WARNING: failed to verify fabric libraries: " << e.what() << "\n";
+            LOG_WARN("failed to verify fabric libraries: " << e.what());
         }
 
         report_progress(40, "Fabric installed");
-        std::cout << "✓ Fabric installed: " << found_folder << "\n";
+        LOG_INFO("Fabric installed: " << found_folder);
         return found_folder;
     } catch (const std::exception& e) {
         set_install_error(std::string("Fabric install error: ") + e.what());
