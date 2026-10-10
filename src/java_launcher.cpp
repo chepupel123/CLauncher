@@ -105,32 +105,7 @@ static bool library_allowed(const json& lib) {
     return allowed;
 }
 
-#ifndef _WIN32
-static int query_java_major_version(const fs::path& java_path) {
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return -1;
-
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
-    if (pid == 0) {
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
-        close(pipefd[1]);
-        execl(java_path.c_str(), java_path.c_str(), "-version", (char*)nullptr);
-        _exit(127);
-    }
-    close(pipefd[1]);
-
-    std::string out;
-    char buf[512];
-    ssize_t n;
-    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) out.append(buf, (size_t)n);
-    close(pipefd[0]);
-
-    int status = 0;
-    waitpid(pid, &status, 0);
-
+static int parse_java_version_output(const std::string& out) {
     size_t p = out.find("version \"");
     if (p == std::string::npos) return -1;
     p += 9;
@@ -150,8 +125,9 @@ static int query_java_major_version(const fs::path& java_path) {
         return -1;
     }
 }
-#else
-static int query_java_major_version_win(const fs::path& java_path) {
+
+static int query_java_major_version(const fs::path& java_path) {
+#ifdef _WIN32
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -159,7 +135,9 @@ static int query_java_major_version_win(const fs::path& java_path) {
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1;
     SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-    std::wstring cmd = L"\"" + java_path.wstring() + L"\" -version 2>&1";
+    // CreateProcessW не гоняет строку через cmd.exe, поэтому 2>&1 здесь не работает.
+    // stderr забирается хэндлом hStdError.
+    std::wstring cmd = L"\"" + java_path.wstring() + L"\" -version";
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -173,6 +151,7 @@ static int query_java_major_version_win(const fs::path& java_path) {
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         CloseHandle(hRead);
         CloseHandle(hWrite);
+        LOG_ERROR("CreateProcessW(java -version) failed, GetLastError=" << GetLastError());
         return -1;
     }
     CloseHandle(hWrite);
@@ -180,38 +159,34 @@ static int query_java_major_version_win(const fs::path& java_path) {
     std::string out;
     char buf[512];
     DWORD n = 0;
-    while (ReadFile(hRead, buf, sizeof(buf), &n, nullptr) && n > 0) {
+    while (ReadFile(hRead, buf, sizeof(buf), &n, nullptr) && n > 0)
         out.append(buf, n);
-    }
     CloseHandle(hRead);
     WaitForSingleObject(pi.hProcess, INFINITE);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    return parse_java_version_output(out);
+#else
+    std::string quoted = "'";
+    for (char c : java_path.string()) {
+        if (c == '\'') quoted += "'\\''";
+        else quoted += c;
+    }
+    quoted += "'";
+    const std::string cmd = quoted + " -version 2>&1";
 
-    size_t p = out.find("version \"");
-    if (p == std::string::npos) return -1;
-    p += 9;
-    std::string v;
-    while (p < out.size() && (std::isdigit((unsigned char)out[p]) || out[p] == '.' || out[p] == '_'))
-        v += out[p++];
-    if (v.empty()) return -1;
-
-    try {
-        if (v.size() >= 2 && v[0] == '1' && v[1] == '.') {
-            size_t dot = v.find('.', 2);
-            return dot == std::string::npos ? 8 : std::stoi(v.substr(2, dot - 2));
-        }
-        size_t dot = v.find('.');
-        return std::stoi(dot == std::string::npos ? v : v.substr(0, dot));
-    } catch (...) {
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) {
+        LOG_ERROR("popen(java -version) failed");
         return -1;
     }
-}
-
-static int query_java_major_version(const fs::path& java_path) {
-    return query_java_major_version_win(java_path);
-}
+    std::string out;
+    char buf[512];
+    while (fgets(buf, sizeof(buf), pipe) != nullptr) out.append(buf);
+    pclose(pipe);
+    return parse_java_version_output(out);
 #endif
+}
 
 static std::string sanitize_username(const std::string& in) {
     std::string out;
@@ -453,22 +428,37 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
     for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        LOG_ERROR("fork() failed");
+    std::error_code mk_ec;
+    fs::create_directories(launcher_paths::launcher_dir(), mk_ec);
+    int log_fd = open(game_log_path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        if (log_fd >= 0) close(log_fd);
+        LOG_ERROR("posix_spawn_file_actions_init() failed");
         return -1;
     }
-    if (pid == 0) {
-        std::error_code ec;
-        fs::create_directories(launcher_paths::launcher_dir(), ec);
-        int fd = open(game_log_path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            dup2(fd, STDOUT_FILENO);
-            dup2(fd, STDERR_FILENO);
-            if (fd > 2) close(fd);
+    if (log_fd >= 0) {
+        bool actions_ok =
+            posix_spawn_file_actions_adddup2(&actions, log_fd, STDOUT_FILENO) == 0 &&
+            posix_spawn_file_actions_adddup2(&actions, log_fd, STDERR_FILENO) == 0 &&
+            (log_fd <= 2 || posix_spawn_file_actions_addclose(&actions, log_fd) == 0);
+        if (!actions_ok) {
+            posix_spawn_file_actions_destroy(&actions);
+            close(log_fd);
+            LOG_ERROR("posix_spawn file actions failed");
+            return -1;
         }
-        execv(java_str.c_str(), argv.data());
-        _exit(127);
+    }
+
+    pid_t pid = 0;
+    int spawn_rc = posix_spawn(&pid, java_str.c_str(), &actions, nullptr,
+                               argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (log_fd >= 0) close(log_fd);
+    if (spawn_rc != 0) {
+        LOG_ERROR("posix_spawn() failed: " << std::strerror(spawn_rc));
+        return -1;
     }
 
     if (close_on_launch) {
@@ -725,7 +715,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         while (flags >> f) jvm_args.push_back(f);
     }
     jvm_args.push_back("-Djava.library.path=" + natives_dir.string());
-    jvm_args.push_back("-Dminecraft.launcher.brand=minecraft-launcher");
+    jvm_args.push_back("-Dminecraft.launcher.brand=CLauncher");
     jvm_args.push_back("-Dminecraft.launcher.version=3.0");
     jvm_args.push_back("-Dfile.encoding=UTF-8");
 
