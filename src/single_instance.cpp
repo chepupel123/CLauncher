@@ -1,5 +1,6 @@
 #include "single_instance.h"
 #include "logger.h"
+#include "paths.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -10,7 +11,6 @@
 #include <sys/file.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <cstdlib>
 #include <string>
 #include <filesystem>
 #endif
@@ -52,13 +52,8 @@ void release() {
 static int g_lock_fd = -1;
 
 bool acquire() {
-    std::string path;
-    const char* home = std::getenv("HOME");
-    if (home && *home) {
-        path = std::string(home) + "/.minecraft-launcher/.clauncher.lock";
-    } else {
-        path = "/tmp/clauncher.lock";
-    }
+    std::filesystem::path lock = launcher_paths::launcher_dir() / ".clauncher.lock";
+    std::string path = lock.string();
     try {
         std::filesystem::path p(path);
         std::filesystem::create_directories(p.parent_path());
