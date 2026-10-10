@@ -2,16 +2,13 @@
 #include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <stdexcept>
 #include <filesystem>
 #include <vector>
-#include <sstream>
-#include <fstream>
 #include <chrono>
 #include <thread>
-#include <iomanip>
 #include <curl/curl.h>
 
 #ifdef _WIN32
@@ -87,24 +84,8 @@ static bool http_download_file(const std::string& url, const fs::path& path)
 
 void JavaManager::log(const std::string& message, bool isError)
 {
-
-    try {
-        std::ofstream logFile(logPath, std::ios::app);
-        if (logFile.is_open()) {
-            auto now = std::chrono::system_clock::now();
-            auto time = std::chrono::system_clock::to_time_t(now);
-            logFile << "[" << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S") << "] "
-                    << (isError ? "[ERROR] " : "[INFO] ")
-                    << message << "\n";
-        }
-    } catch (...) {}
-
-
-    if (isError) {
-        std::cerr << message << "\n";
-    } else {
-        std::cout << message << "\n";
-    }
+    if (isError) LOG_ERROR(message);
+    else         LOG_INFO(message);
 }
 
 std::string JavaManager::shellQuote(const std::string& value)
@@ -207,26 +188,59 @@ fs::path JavaManager::getJavaBinary(JavaVersion version) const
 #endif
 }
 
+static bool commandOnPath(const char* name)
+{
+#ifdef _WIN32
+    std::wstring wname;
+    for (const char* p = name; *p; ++p)
+        wname.push_back(static_cast<unsigned char>(*p));
+
+    wchar_t found[MAX_PATH];
+    DWORD n = SearchPathW(nullptr, wname.c_str(), L".exe", MAX_PATH, found, nullptr);
+    if (n == 0 || n >= MAX_PATH) return false;
+    DWORD attr = GetFileAttributesW(found);
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
+#else
+    const char* path_env = std::getenv("PATH");
+    if (!path_env || !*path_env) return false;
+
+    std::string path(path_env);
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t sep = path.find(':', start);
+        std::string dir = path.substr(
+            start, sep == std::string::npos ? std::string::npos : sep - start);
+        if (dir.empty()) dir = ".";
+        fs::path candidate = fs::path(dir) / name;
+        std::error_code ec;
+        if (access(candidate.c_str(), X_OK) == 0 && fs::is_regular_file(candidate, ec))
+            return true;
+        if (sep == std::string::npos) break;
+        start = sep + 1;
+    }
+    return false;
+#endif
+}
+
 void JavaManager::checkDependencies()
 {
 #ifdef _WIN32
-    // tar.exe (bsdtar) встроен в Windows 10 1803+ и нужен для распаковки JRE
-    // и нативных библиотек (jar = zip). PowerShell остаётся лишь запасным
-    // вариантом распаковки Java.
-    if (std::system("tar --version >NUL 2>&1") != 0) {
+    // tar.exe (bsdtar) встроен в Windows 10 1803+ и нужен для распаковки JRE.
+    // PowerShell остаётся лишь запасным вариантом распаковки Java.
+    if (!commandOnPath("tar")) {
         throw std::runtime_error(
             "tar.exe not found. Windows 10 1803 or newer is required "
             "(or install 7-Zip / bsdtar manually).");
     }
 #else
-    if (std::system("command -v curl >/dev/null 2>&1") != 0) {
+    if (!commandOnPath("curl")) {
         throw std::runtime_error("curl is not installed. Please install curl.");
     }
-    if (std::system("command -v tar >/dev/null 2>&1") != 0) {
+    if (!commandOnPath("tar")) {
         throw std::runtime_error("tar is not installed. Please install tar.");
     }
     // unzip нужен MinecraftInstaller для распаковки нативных LWJGL-библиотек.
-    if (std::system("command -v unzip >/dev/null 2>&1") != 0) {
+    if (!commandOnPath("unzip")) {
         throw std::runtime_error(
             "unzip is not installed (needed to extract Minecraft native libraries). "
             "Please install unzip.");
@@ -493,7 +507,6 @@ void JavaManager::makeExecutable(const fs::path& javaBinary)
 JavaManager::JavaManager()
 {
     runtimeDir = launcher_paths::runtime_dir();
-    logPath = launcher_paths::launcher_dir() / "java-manager.log";
 
     std::error_code ec;
     fs::create_directories(runtimeDir, ec);
