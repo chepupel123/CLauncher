@@ -17,7 +17,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -507,11 +506,8 @@ namespace
         while (done.load(std::memory_order_relaxed) < total) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             size_t d = done.load(std::memory_order_relaxed);
-            std::cout << "\r" << stage_label << ": " << d << "/" << total
-                      << " (" << pct_now(d) << "%)      " << std::flush;
             publish(d);
         }
-        std::cout << "\r" << stage_label << ": " << total << "/" << total << " (100%)\n";
         for (auto& t : pool) t.join();
         publish(total);
 
