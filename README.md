@@ -149,4 +149,3 @@ When you press Play, the launcher runs the following chain:
 * **Documentation (RU):** [README_RU.md](README_RU.md)
 * **Documentation (KZ):** [README_KZ.md](README_KZ.md)
 * **Discord:** https://discord.gg/kazYTTErkT
-```
