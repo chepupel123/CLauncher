@@ -69,8 +69,8 @@ namespace {
     std::chrono::steady_clock::time_point g_stage_start_time = std::chrono::steady_clock::now();
     size_t g_stage_bytes_at_start = 0;
 
-    constexpr double kSpeedWarmupSec = 10.0;
-    constexpr double kMinEtaSpeedMbps = 0.1;
+    constexpr double kSpeedWarmupSec = 3.0;
+    constexpr double kMinEtaSpeedMbps = 0.02;
     constexpr int kMaxEtaSec = 86400;
 
     thread_local bool t_count_bytes = false;
@@ -98,19 +98,27 @@ namespace {
     }
 
     // Средняя скорость с начала этапа: (bytes_done - start) / elapsed.
-    // Первые 10 с не публикуем. ETA скрыт при скорости < 0.1 МБ/с или > 24 ч.
+    // Первые 3 с не публикуем. ETA скрыт при скорости < 0.02 МБ/с или > 24 ч.
     void update_speed_eta(size_t bytes_done, size_t bytes_total) {
         if (bytes_total == 0) return;
         if (bytes_done > bytes_total) bytes_done = bytes_total;
 
         bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
+
+        // Идёт проверка SHA1: байты не приходят и «скорость» упала бы.
+        // Не трогаем последние известные скорость и ETA — UI сам покажет «checking...».
+        if (hashing) {
+            MinecraftInstaller::g_download_checking.store(true, std::memory_order_relaxed);
+            return;
+        }
+        MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
+
         double elapsed = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - g_stage_start_time).count();
 
         if (elapsed < kSpeedWarmupSec) {
             MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
             MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
-            MinecraftInstaller::g_download_checking.store(hashing, std::memory_order_relaxed);
             return;
         }
 
@@ -119,20 +127,22 @@ namespace {
         double speed_mbps = (static_cast<double>(transferred) / 1024.0 / 1024.0) / elapsed;
         MinecraftInstaller::g_download_speed_mbps.store(speed_mbps, std::memory_order_relaxed);
 
-        if (hashing && speed_mbps < kMinEtaSpeedMbps) {
-            MinecraftInstaller::g_download_checking.store(true, std::memory_order_relaxed);
-            MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
-            MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
-            return;
-        }
-        MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
-
-        if (speed_mbps < kMinEtaSpeedMbps || bytes_done >= bytes_total) {
-            MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
-            return;
-        }
-
         size_t remaining = bytes_total - bytes_done;
+
+        // Почти всё скачано (< 1 МБ): не гасим ETA в самом конце,
+        // показываем минимальное время (1 сек — меньшего UI не показывает).
+        if (remaining < 1024 * 1024) {
+            MinecraftInstaller::g_download_eta_seconds.store(1, std::memory_order_relaxed);
+            return;
+        }
+
+        // Скорость ниже 20 КБ/с: ETA не считаем, но саму скорость не
+        // скрываем — она остаётся в UI (пусть даже 0.01 МБ/с).
+        if (speed_mbps < kMinEtaSpeedMbps) {
+            MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
+            return;
+        }
+
         double speed_bps = speed_mbps * 1024.0 * 1024.0;
         double eta_d = static_cast<double>(remaining) / speed_bps;
         int eta = -1;
