@@ -63,24 +63,24 @@ sudo apt-get install -y build-essential cmake git pkg-config unzip \
   nlohmann-json3-dev libx11-dev libxrandr-dev libxinerama-dev \
   libxcursor-dev fonts-dejavu-core
 
-Fedora / RHEL / CentOS Stream:
-bash
-
+**Fedora / RHEL / CentOS Stream:**
+```bash
 sudo dnf install -y gcc-c++ cmake git pkg-config unzip \
   glfw-devel mesa-libGL-devel libcurl-devel openssl-devel \
   nlohmann-json-devel libX11-devel libXrandr-devel \
   libXinerama-devel libXcursor-devel dejavu-sans-fonts
+```
 
-Arch / Manjaro / EndeavourOS:
-bash
-
+**Arch / Manjaro / EndeavourOS:**
+```bash
 sudo pacman -S --needed base-devel cmake git pkg-config unzip \
   glfw mesa curl openssl nlohmann-json libx11 libxrandr \
   libxinerama libxcursor ttf-dejavu
+```
 
 Then get the project and build it:
-bash
 
+```bash
 git clone https://github.com/chepupel123/CLauncher.git
 cd CLauncher
 rm -rf build
@@ -88,99 +88,85 @@ mkdir build
 cd build
 cmake ..
 make -j$(nproc)
+```
 
 Run it:
-bash
 
+```bash
 ./CLauncher
+```
 
-Quick Start on Windows
+## Quick Start on Windows
 
-You will need MSYS2. Download the installer from msys2.org and install it to C:\msys64. Open the MSYS2 UCRT64 terminal and run:
-bash
+You will need **MSYS2**. Download the installer from msys2.org and install it to `C:\msys64`. Open the **MSYS2 UCRT64** terminal and run:
 
+```bash
 pacman -Syu
 pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
   mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-curl \
   mingw-w64-ucrt-x86_64-openssl mingw-w64-ucrt-x86_64-glfw \
   mingw-w64-ucrt-x86_64-nlohmann-json make
+```
 
 Then navigate to the project folder and build:
-bash
 
+```bash
 mkdir build
 cd build
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja
+```
 
-This produces CLauncher.exe. The release zip bundles all required DLLs and a cacert.pem TLS trust store.
-How It Works Under the Hood
+This produces `CLauncher.exe`. The release zip bundles all required DLLs and a `cacert.pem` TLS trust store.
+
+## How It Works Under the Hood
 
 When you press Play, the launcher runs the following chain:
 
-    MinecraftInstaller syncs with the Mojang manifest and downloads whatever is missing: the game client, libraries, several thousand asset files and native components. The adaptive download pool optimizes speed based on your hardware.
+1. **MinecraftInstaller** syncs with the Mojang manifest and downloads whatever is missing: the game client, libraries, several thousand asset files and native components. The adaptive download pool optimizes speed based on your hardware.
+2. **Fabric (optional).** If selected, the official Fabric installer runs in a safe staging directory, and then Fabric API, Sodium, Lithium and FerriteCore are downloaded from Modrinth, matched to your game version.
+3. **JavaManager.** Automatically downloads and extracts a portable JRE (Java 8, 17, or 21 depending on the game version) from Adoptium if the appropriate version isn't already cached in the launcher folder.
+4. **JavaLauncher** starts the game through `execv` on Linux or `CreateProcessW` on Windows. There is no shell between the launcher and the game, and a long classpath is passed through an argfile.
+5. While the game is running the launcher window hides itself. When you exit Minecraft, the window reappears automatically, ready for another launch.
 
-    Fabric (optional). If selected, the official Fabric installer runs in a safe staging directory, and then Fabric API, Sodium, Lithium and FerriteCore are downloaded from Modrinth, matched to your game version.
+## File Locations
 
-    JavaManager. Automatically downloads and extracts a portable JRE (Java 8, 17, or 21 depending on the game version) from Adoptium if the appropriate version isn't already cached in the launcher folder.
+**On Linux:**
+* Game (worlds, mods, configs): `~/.minecraft/`
+* Launcher settings, cache, JRE: `~/.clauncher/` (specifically `~/.clauncher/runtime/` and `~/.clauncher/launcher_settings.json`)
+* Launcher log: `~/.clauncher/logs/clauncher.log`
 
-    JavaLauncher starts the game through execv on Linux or CreateProcessW on Windows. There is no shell between the launcher and the game, and a long classpath is passed through an argfile.
+**On Windows:**
+* Game: `%USERPROFILE%\.minecraft\`
+* Launcher settings, cache, JRE: `%APPDATA%\CLauncher\`
+* Launcher log: `%APPDATA%\CLauncher\logs\clauncher.log`
 
-    While the game is running the launcher window hides itself. When you exit Minecraft, the window reappears automatically, ready for another launch.
-
-File Locations
-
-On Linux:
-
-    Game (worlds, mods, configs): ~/.minecraft/
-
-    Launcher settings, cache, JRE: ~/.clauncher/ (specifically ~/.clauncher/runtime/ and ~/.clauncher/launcher_settings.json)
-
-    Launcher log: ~/.clauncher/logs/clauncher.log
-
-On Windows:
-
-    Game: %USERPROFILE%\.minecraft\
-
-    Launcher settings, cache, JRE: %APPDATA%\CLauncher\
-
-    Launcher log: %APPDATA%\CLauncher\logs\clauncher.log
-
-Offline Player Identity
+## Offline Player Identity
 
 The launcher generates a deterministic offline UUID from the nickname using Minecraft's standard OfflinePlayer naming scheme (a name-based MD5 UUID, version 3). It is stable between launches, so your progress in worlds is preserved correctly.
-Known Limitations
 
-    The Windows executable is unsigned, so SmartScreen or your antivirus may show a warning on the first launch (More info → Run anyway).
+## Known Limitations
 
-    The first installation is slow: several thousand asset files. Later launches are much faster, because everything is cached and SHA1-checked.
+* The Windows executable is unsigned, so SmartScreen or your antivirus may show a warning on the first launch (More info → Run anyway).
+* The first installation is slow: several thousand asset files. Later launches are much faster, because everything is cached and SHA1-checked.
+* Cyrillic in nicknames is rejected on purpose: the nickname goes to servers and into world files, where only a limited character set is safe.
 
-    Cyrillic in nicknames is rejected on purpose: the nickname goes to servers and into world files, where only a limited character set is safe.
+## Troubleshooting
 
-Troubleshooting
-
-    GLFW init failed: GLFW is not installed, or you are launching outside a graphical session.
-
-    Question marks instead of text: A font with Cyrillic support was not found. Install fonts-dejavu-core (Debian/Ubuntu), dejavu-sans-fonts (Fedora), ttf-dejavu (Arch).
-
-    The game crashes right after startup: Most likely a mod built for a different Minecraft version. Remove it from the mods folder.
-
-    The download stalled halfway: Press Play again: already downloaded files are kept and verified by SHA1, and only missing files are fetched again.
+* **GLFW init failed:** GLFW is not installed, or you are launching outside a graphical session.
+* **Question marks instead of text:** A font with Cyrillic support was not found. Install `fonts-dejavu-core` (Debian/Ubuntu), `dejavu-sans-fonts` (Fedora), `ttf-dejavu` (Arch).
+* **The game crashes right after startup:** Most likely a mod built for a different Minecraft version. Remove it from the mods folder.
+* **The download stalled halfway:** Press Play again: already downloaded files are kept and verified by SHA1, and only missing files are fetched again.
 
 ## Roadmap
 
-    v1.0.3 — Instance System: Isolated instances for different modpacks and versions, so you can switch between them without mixing mods.
+* **v1.0.3 — Instance System:** Isolated instances for different modpacks and versions, so you can switch between them without mixing mods.
+* **v1.0.4 — Forge & 26.x Support:** Adding Forge loader support, and bringing back the Minecraft 26.x line (which requires Java 25).
+* **v1.0.5 — Modrinth Integration:** An in-game browser with the Modrinth API. Search and install mods, resource packs, and shaders in one click.
 
-    v1.0.4 — Forge & 26.x Support: Adding Forge loader support, and bringing back the Minecraft 26.x line (which requires Java 25).
+## Links
 
-    v1.0.5 — Modrinth Integration: An in-game browser with the Modrinth API. Search and install mods, resource packs, and shaders in one click.
-
-Links
-
-    GitHub repository: https://github.com/chepupel123/CLauncher
-
-    Documentation (RU): README_RU.md
-
-    Documentation (KZ): README_KZ.md
-
-    Discord: https://discord.gg/kazYTTErkT
+* **GitHub repository:** https://github.com/chepupel123/CLauncher
+* **Documentation (RU):** [README_RU.md](README_RU.md)
+* **Documentation (KZ):** [README_KZ.md](README_KZ.md)
+* **Discord:** https://discord.gg/kazYTTErkT
