@@ -167,7 +167,7 @@ Troubleshooting
 
     The download stalled halfway: Press Play again: already downloaded files are kept and verified by SHA1, and only missing files are fetched again.
 
-##Roadmap
+Roadmap
 
     v1.0.3 — Instance System: Isolated instances for different modpacks and versions, so you can switch between them without mixing mods.
 
