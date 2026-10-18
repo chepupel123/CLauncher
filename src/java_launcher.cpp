@@ -489,6 +489,16 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
 #endif
 }
 
+// Сравнение версий Minecraft ("1.9" < "1.18" и т.п.).
+// Нельзя сравнивать версии как строки: "1.9" < "1.18" дало бы false.
+static bool is_version_less(const std::string& v, int target_major, int target_minor, int target_patch) {
+    int maj = 0, min = 0, pat = 0;
+    std::sscanf(v.c_str(), "%d.%d.%d", &maj, &min, &pat);
+    if (maj != target_major) return maj < target_major;
+    if (min != target_minor) return min < target_minor;
+    return pat < target_patch;
+}
+
 bool JavaLauncher::launch(const std::string& nickname_raw,
                           const std::string& version,
                           int memory_mb,
@@ -718,6 +728,11 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     jvm_args.push_back("-Dminecraft.launcher.brand=CLauncher");
     jvm_args.push_back("-Dminecraft.launcher.version=3.0");
     jvm_args.push_back("-Dfile.encoding=UTF-8");
+
+    // CVE-2021-44228 (Log4Shell): 1.18.0 и ниже уязвимы. 1.18.1 и выше — нет.
+    if (is_version_less(mcVersion, 1, 18, 1)) {
+        jvm_args.push_back("-Dlog4j2.formatMsgNoLookups=true");
+    }
 
     {
         fs::path mods_dir = version_dir / "mods";
