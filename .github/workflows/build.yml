@@ -23,17 +23,17 @@ jobs:
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-curl
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-glfw
-            mingw-w64-x86_64-nlohmann-json
-            mingw-w64-x86_64-ca-certificates
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-glfw
+            mingw-w64-ucrt-x86_64-nlohmann-json
+            mingw-w64-ucrt-x86_64-ca-certificates
 
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -45,9 +45,9 @@ jobs:
         run: |
           # glfw3.dll и libcurl-4.dll (с транзитивными зависимостями) линкуются
           # динамически — без них exe не стартует на чистой системе, поэтому
-          # кладём все /mingw64 DLL рядом с бинарём.
+          # кладём все /ucrt64 DLL рядом с бинарём.
           mkdir -p release/CLauncher-Windows-x64
-          cp build/CLauncher.exe release/CLauncher-Windows-x64/CLauncher-beta.exe
+          cp build/CLauncher.exe release/CLauncher-Windows-x64/CLauncher.exe
           cd release/CLauncher-Windows-x64
           # Транзитивное замыкание зависимостей: ldd на exe покрывает не всё
           # (libcurl тянет openssl/zlib/zstd/brotli/nghttp2...), поэтому
@@ -55,9 +55,9 @@ jobs:
           changed=1
           while [ "$changed" = "1" ]; do
             changed=0
-            for bin in CLauncher-beta.exe *.dll; do
+            for bin in CLauncher.exe *.dll; do
               [ -f "$bin" ] || continue
-              for dep in $(ldd "$bin" 2>/dev/null | grep '/mingw64/bin/' | awk '{print $3}'); do
+              for dep in $(ldd "$bin" 2>/dev/null | grep '/ucrt64/bin/' | awk '{print $3}'); do
                 if [ ! -f "$(basename "$dep")" ]; then
                   cp "$dep" . && changed=1
                 fi
@@ -67,7 +67,7 @@ jobs:
           # Корневые TLS-сертификаты: MinGW-libcurl на OpenSSL вне MSYS2 не
           # находит CA-хранилище, и тогда любой HTTPS падает. exe ищет
           # cacert.pem рядом с собой (см. main.cpp, SSL_CERT_FILE).
-          cert=$(find /mingw64 -maxdepth 4 \( -name 'cert.pem' -o -name 'ca-bundle.crt' \) 2>/dev/null | head -1)
+          cert=$(find /ucrt64 -maxdepth 4 \( -name 'cert.pem' -o -name 'ca-bundle.crt' \) 2>/dev/null | head -1)
           [ -n "$cert" ] && cp "$cert" cacert.pem
           echo "Bundled files:" && ls -la
 
@@ -83,8 +83,6 @@ jobs:
 
   # ================= LINUX APPIMAGE =================
   build-appimage:
-    # ubuntu-22.04: быстрее и надёжнее раннера, чем 20.04.
-    # AppImage будет требовать glibc 2.35+ (Ubuntu 22.04+, Debian 12+, Mint 21+).
     runs-on: ubuntu-22.04
 
     steps:
