@@ -62,7 +62,7 @@ sudo apt-get install -y build-essential cmake git pkg-config unzip \
   libglfw3-dev libgl1-mesa-dev libcurl4-openssl-dev libssl-dev \
   nlohmann-json3-dev libx11-dev libxrandr-dev libxinerama-dev \
   libxcursor-dev fonts-dejavu-core
-
+```
 **Fedora / RHEL / CentOS Stream:**
 ```bash
 sudo dnf install -y gcc-c++ cmake git pkg-config unzip \
