@@ -476,8 +476,15 @@ namespace
         if (todo.empty()) return true;
 
         const size_t total = todo.size();
-        unsigned workers = std::thread::hardware_concurrency();
-        if (workers == 0) workers = 4;
+        // Умное скачивание: в 4 раза больше потоков, чем ядер (сети нравится
+        // параллелизм), но не больше разумного числа на количество файлов.
+        unsigned hw = std::thread::hardware_concurrency();
+        if (hw == 0) hw = 4;  // hardware_concurrency() может вернуть 0
+        unsigned by_cpu = hw * 4;
+        unsigned by_files = 16;
+        if (total <= 10) by_files = 4;
+        else if (total <= 100) by_files = 8;
+        unsigned workers = std::min(by_cpu, by_files);
         workers = std::min(workers, max_workers);
 
 
@@ -1057,6 +1064,7 @@ bool MinecraftInstaller::installPerformanceMods(const std::string&,
         }
 
         const std::pair<std::string, std::string> mods[] = {
+            {"Fabric API",  "fabric-api"},
             {"Sodium",      "sodium"},
             {"Lithium",     "lithium"},
             {"FerriteCore", "ferrite-core"},
@@ -1119,7 +1127,7 @@ bool MinecraftInstaller::installPerformanceMods(const std::string&,
 
         std::ofstream mf(manifest_path);
         mf << new_manifest.dump(2);
-        LOG_INFO("Performance mods installed: Sodium, Lithium, FerriteCore");
+        LOG_INFO("Performance mods installed: Fabric API, Sodium, Lithium, FerriteCore");
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("Mods install error: " << e.what());
