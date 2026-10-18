@@ -38,7 +38,7 @@ Requires **OpenGL 3.3 Core** or newer. Runs on Linux (Debian, Ubuntu, Mint, Kali
 ## Supported Versions
 
 * **Vanilla and Fabric:** every 1.x release in the Mojang manifest, through the 1.21.x line (Fabric from 1.14.x onward).
-* **The 26.x line** is temporarily not supported in 1.0.2. It requires Java 25 and a new modding toolchain, which are still stabilizing. **Support for 26.x is planned for version 1.0.4 (see the [Roadmap](#roadmap)).**
+* **The 26.x line** is temporarily not supported in 1.0.2. It requires Java 25 and a new modding toolchain, which are still stabilizing. **Support for 26.x is planned for version 1.0.4 (see the [Roadmap](#Roadmap)).**
 
 **System requirements:** any modern Linux distribution with glibc 2.35+ and **OpenGL 3.3 Core**, or Windows 10 and 11. The prebuilt AppImage needs glibc 2.35 or newer; on older systems build from source.
 
