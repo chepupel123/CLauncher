@@ -14,43 +14,45 @@
 #endif
 
 int main(int argc, char** argv) {
-    // Лог-файл: clauncher.log рядом с исполняемым файлом (или в папке данных
-    // лаунчера, если рядом с exe нет прав на запись).
-    if (!single_instance::acquire()) {
+    // 1. СНАЧАЛА инициализируем логгер. Теперь мы увидим любые ошибки.
+    logger::init(argc > 0 ? argv[0] : nullptr);
+
+    // 2. Используем RAII для блокировки. Деструктор сам вызовет release().
+    single_instance::InstanceLock instance_lock;
+    
+    if (!instance_lock.is_acquired()) {
         LOG_WARN("Another instance is already running — exiting");
 #ifdef _WIN32
         MessageBoxW(nullptr,
-                    L"CLauncher уже запущен.",
+                    L"CLauncher уже запущен.", // Убедись, что файл сохранен в UTF-16 или используй u8"..." 
                     L"CLauncher",
                     MB_OK | MB_ICONINFORMATION);
 #endif
         return 0;
     }
 
-    logger::init(argc > 0 ? argv[0] : nullptr);
-
-    // TLS: на Windows сначала настраиваем системное хранилище CA
-    // (CURLSSLOPT_NATIVE_CA, libcurl >= 7.71), затем cacert.pem рядом с exe.
-    // На Linux поведение не меняется — системные CA находятся автоматически.
-    // Проверка сертификатов никогда не отключается.
+    // 3. Инициализация TLS
     curl_tls::initialize();
 
     try {
         Launcher launcher;
         launcher.init();
 
+        // Главный цикл
         while (!launcher.should_close()) {
             launcher.render();
         }
 
-        LOG_INFO("Launcher closed");
-        curl_global_cleanup();
-        single_instance::release();
-        return 0;
+        LOG_INFO("Launcher closed gracefully");
     } catch (const std::exception& e) {
         LOG_ERROR("Fatal error: " << e.what());
-        curl_global_cleanup();
-        single_instance::release();
+        curl_global_cleanup(); // Очищаем curl при ошибке
         return 1;
     }
+
+    // Очистка при успешном завершении
+    curl_global_cleanup(); 
+    return 0;
+    
+    // При выходе из функции сработает деструктор instance_lock и снимет блокировку.
 }
