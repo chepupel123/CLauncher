@@ -1,6 +1,9 @@
 #include "single_instance.h"
 #include "logger.h"
-#include "paths.h"
+
+#include <string>
+#include <filesystem>
+#include <cstdlib>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -11,8 +14,6 @@
 #include <sys/file.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <string>
-#include <filesystem>
 #endif
 
 namespace single_instance {
@@ -22,12 +23,14 @@ namespace single_instance {
 static HANDLE g_mutex = nullptr;
 
 bool acquire() {
-    const wchar_t* name = L"Global\\CLauncher_SingleInstance_Mutex";
+    const wchar_t* name = L"Local\\CLauncher_SingleInstance_Mutex";
     g_mutex = CreateMutexW(nullptr, TRUE, name);
+    
     if (g_mutex == nullptr) {
         LOG_ERROR("CreateMutexW failed, GetLastError=" << GetLastError());
         return true;
     }
+    
     DWORD err = GetLastError();
     if (err == ERROR_ALREADY_EXISTS) {
         LOG_WARN("Another CLauncher instance is already running");
@@ -35,6 +38,7 @@ bool acquire() {
         g_mutex = nullptr;
         return false;
     }
+    
     LOG_INFO("Single-instance lock acquired (Windows)");
     return true;
 }
@@ -52,24 +56,31 @@ void release() {
 static int g_lock_fd = -1;
 
 bool acquire() {
-    std::filesystem::path lock = launcher_paths::launcher_dir() / ".clauncher.lock";
-    std::string path = lock.string();
-    try {
-        std::filesystem::path p(path);
-        std::filesystem::create_directories(p.parent_path());
-    } catch (...) {}
+    const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    std::filesystem::path lock_dir;
+    
+    if (runtime_dir && std::filesystem::exists(runtime_dir)) {
+        lock_dir = runtime_dir;
+    } else {
+        lock_dir = std::filesystem::temp_directory_path();
+    }
 
-    g_lock_fd = open(path.c_str(), O_RDWR | O_CREAT, 0644);
+    std::filesystem::path lock_path = lock_dir / "clauncher.lock";
+    std::string path_str = lock_path.string();
+
+    g_lock_fd = open(path_str.c_str(), O_RDWR | O_CREAT, 0644);
     if (g_lock_fd < 0) {
-        LOG_WARN("Cannot open lock file " << path << " — allowing launch");
+        LOG_WARN("Cannot open lock file " << path_str << " — allowing launch");
         return true;
     }
+    
     if (flock(g_lock_fd, LOCK_EX | LOCK_NB) != 0) {
         LOG_WARN("Another CLauncher instance is already running");
         close(g_lock_fd);
         g_lock_fd = -1;
         return false;
     }
+    
     LOG_INFO("Single-instance lock acquired (Linux)");
     return true;
 }
@@ -83,5 +94,15 @@ void release() {
 }
 
 #endif
+
+InstanceLock::InstanceLock() {
+    m_acquired = acquire();
+}
+
+InstanceLock::~InstanceLock() {
+    if (m_acquired) {
+        release();
+    }
+}
 
 } // namespace single_instance
