@@ -64,6 +64,11 @@ inline std::filesystem::path appdata_dir() {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Legacy: единый глобальный .minecraft. Больше не используется новым кодом
+// (инстансы дают свой --gameDir), но нужен для обратной совместимости —
+// в частности, для legacy-перегрузки JavaLauncher::launch(nick, version, ...).
+// ---------------------------------------------------------------------------
 inline std::filesystem::path minecraft_dir() {
 #ifdef _WIN32
     return appdata_dir() / ".minecraft";
@@ -80,6 +85,49 @@ inline std::filesystem::path launcher_dir() {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Общие ресурсы всех инстансов (read-only после установки, кроме установщика).
+//   shared/assets/{indexes,objects}
+//   shared/libraries/<group>/<artifact>/<version>/<file>.jar
+//   shared/versions/<version_id>/{<id>.json, <id>.jar, natives, .complete}
+//   shared/runtime/{java8,java17,java21}
+// ---------------------------------------------------------------------------
+inline std::filesystem::path shared_dir() {
+    return launcher_dir() / "shared";
+}
+
+inline std::filesystem::path shared_assets_dir() {
+    return shared_dir() / "assets";
+}
+
+inline std::filesystem::path shared_libraries_dir() {
+    return shared_dir() / "libraries";
+}
+
+inline std::filesystem::path shared_versions_dir() {
+    return shared_dir() / "versions";
+}
+
+// Новое место для JRE. JavaManager пока использует legacy runtime_dir(),
+// переключение — отдельным шагом (потребует миграции скачанных JRE).
+inline std::filesystem::path shared_runtime_dir() {
+    return shared_dir() / "runtime";
+}
+
+// ---------------------------------------------------------------------------
+// Инстансы: каждый — своя изолированная сборка.
+//   instances/<name>/instance.json
+//   instances/<name>/.minecraft/{mods,saves,resourcepacks,config,...}
+// ---------------------------------------------------------------------------
+inline std::filesystem::path instances_dir() {
+    return launcher_dir() / "instances";
+}
+
+// ---------------------------------------------------------------------------
+// Legacy / общие служебные директории
+// ---------------------------------------------------------------------------
+// Legacy: старый путь для JRE. Оставлен, пока JavaManager не перейдёт
+// на shared_runtime_dir(). Не использовать в новом коде.
 inline std::filesystem::path runtime_dir() {
     return launcher_dir() / "runtime";
 }
