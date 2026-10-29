@@ -154,7 +154,18 @@ namespace {
 
 namespace
 {
+    // Маркер готовности версии: пустой файл .complete внутри версии.
+    // Ставится только после полной успешной установки.
+    inline bool version_complete(const fs::path& dir)
+    {
+        std::error_code ec;
+        return fs::is_regular_file(dir / ".complete", ec);
+    }
 
+    inline void mark_version_complete(const fs::path& dir)
+    {
+        std::ofstream(dir / ".complete", std::ios::binary).put('\n');
+    }
 
     std::once_flag curl_global_once;
     void ensure_curl_global()
@@ -938,7 +949,8 @@ bool MinecraftInstaller::install(const std::string& version)
         bool fresh = false;
         json metadata;
 
-        if (fs::exists(version_json) && fs::exists(client_jar)) {
+        if (fs::exists(version_json) && fs::exists(client_jar) &&
+            version_complete(version_dir)) {
 
 
             LOG_INFO("Minecraft " << version << " is already downloaded, verifying...");
@@ -1032,6 +1044,7 @@ bool MinecraftInstaller::install(const std::string& version)
         }
         report_progress(98, "Done");
 
+        mark_version_complete(version_dir);
         LOG_INFO("Minecraft " << version << " installed successfully");
         return true;
     }
@@ -1147,6 +1160,7 @@ std::string MinecraftInstaller::findFabricDir(const std::string& mc_version)
 
     for (const auto& entry : fs::directory_iterator(versions_dir)) {
         if (!entry.is_directory()) continue;
+        if (!version_complete(entry.path())) continue;
         std::string name = entry.path().filename().string();
         if (name.find("fabric-loader-") != 0) continue;
         if (name.size() < suffix.size() ||
@@ -1330,6 +1344,9 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         }
 
         fs::path installed_fabric_dir = minecraft_dir / "versions" / found_folder;
+        // Неполная папка от прошлой попытки мешает rename — убираем её.
+        std::error_code pre_ec;
+        fs::remove_all(installed_fabric_dir, pre_ec);
         std::error_code replace_ec;
         fs::rename(fabric_dir, installed_fabric_dir, replace_ec);
         if (replace_ec)
@@ -1337,6 +1354,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         std::error_code cleanup_ec;
         fs::remove_all(fabric_temp_dir, cleanup_ec);
 
+        mark_version_complete(installed_fabric_dir);
         report_progress(40, "Fabric installed");
         LOG_INFO("Fabric installed: " << found_folder);
         return found_folder;
