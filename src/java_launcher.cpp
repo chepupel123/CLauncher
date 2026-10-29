@@ -48,18 +48,25 @@ static const char CLASSPATH_SEP = ':';
 
 static std::string getOptimizationFlags(int javaVersion) {
     if (javaVersion >= 17) {
-        return "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=20 "
-               "-XX:+UnlockExperimentalVMOptions -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 "
-               "-XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=32m -XX:G1ReservePercent=20 "
-               "-XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 "
-               "-XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 "
-               "-XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1";
+        return "-XX:+UseG1GC "
+               "-XX:MaxGCPauseMillis=100 "
+               "-XX:+ParallelRefProcEnabled "
+               "-XX:G1NewSizePercent=20 "
+               "-XX:G1MaxNewSizePercent=40 "
+               "-XX:G1HeapRegionSize=4m "
+               "-XX:G1ReservePercent=15 "
+               "-XX:G1HeapWastePercent=5 "
+               "-XX:InitiatingHeapOccupancyPercent=20 "
+               "-XX:G1MixedGCLiveThresholdPercent=90 "
+               "-XX:G1RSetUpdatingPauseTimePercent=5 "
+               "-XX:SurvivorRatio=8 "
+               "-XX:MaxTenuringThreshold=4 "
+               "-XX:+DisableExplicitGC "
+               "-XX:+PerfDisableSharedMem "
+               "-XX:ParallelGCThreads=3";
     }
-    // Java 8 rejects UseStringDeduplication / some G1*Percent flags
-    // ("Unrecognized VM option" → exit 1 in a few milliseconds).
-    return "-XX:+UseG1GC -XX:MaxGCPauseMillis=50";
+    return "-XX:+UseParallelGC -XX:MaxGCPauseMillis=50 -XX:+DisableExplicitGC";
 }
-
 static bool parse_maven_name(const std::string& lib_name, std::string& group_path,
                              std::string& artifact, std::string& lib_version,
                              std::string& classifier) {
