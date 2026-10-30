@@ -18,12 +18,8 @@ static constexpr long MANIFEST_TTL_SECONDS = 3600;
 
 // Единственная точка отсечки неподдерживаемых линеек.
 //
-// Поддерживается только ветка 1.x (последняя — 1.21.x). Линейка 26.x и новее
-// сознательно вырезана: она требует Java 25 и нового Loom, экосистема Fabric
-// под неё ещё не готова, а игра нацелена на заметно более новое железо, чем то,
-// под которое заточен лаунчер. Если версия не проходит этот фильтр, она не
-// попадает ни в список версий, ни в какой-либо последующий код:
-// ни в выбор Java, ни в установку Fabric/модов, ни в запуск игры.
+// Поддерживаются классическая линейка Minecraft 1.x и новая year-based
+// линейка 26.x+. Загрузчик Fabric для 26.x по-прежнему ограничивается UI.
 static bool is_supported_release(const std::string& id) {
     long major = 0;
     size_t i = 0;
@@ -33,7 +29,9 @@ static bool is_supported_release(const std::string& id) {
         ++i;
         has_digit = true;
     }
-    return has_digit && major == 1;
+    if (!has_digit) return false;
+    // Поддерживаем линейку 1.x и новую year-based линейку 26.x+.
+    return major == 1 || major >= 26;
 }
 
 size_t write_callback(void* contents, size_t size, size_t nmemb, std::string* userp) {
