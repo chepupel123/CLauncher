@@ -273,6 +273,24 @@ void Launcher::init() {
         LOG_INFO("Manifest cache is fresh, skipping download");
         set_status(tr().ready, 0.0f);
     }
+
+    // Загружаем инстансы
+    instance_manager_.load_all(launcher_paths::instances_dir());
+    Instance* inst = instance_manager_.get_selected();
+    if (!inst) {
+        std::string seed_v = config_.selected_version.empty() ? "1.20.1" : config_.selected_version;
+        inst = instance_manager_.create("default", seed_v, seed_v, config_.mod_loader);
+        if (inst) {
+            inst->memory_mb = RAM_OPTIONS[memory_index_];
+            inst->nickname = nickname_buf_;
+            inst->save();
+        }
+    }
+    if (inst) {
+        config_.selected_version = inst->mc_version;
+        config_.mod_loader = inst->mod_loader;
+        config_.memory_mb = inst->memory_mb;
+    }
 }
  
 void Launcher::setup_imgui() {
@@ -526,6 +544,45 @@ void Launcher::draw_ui() {
         set_status(tr().ready, 0.0f);
     }
     ImGui::Separator();
+
+    // Выбор инстанса
+    Instance* cur_inst = instance_manager_.get_selected();
+    std::string cur_name = cur_inst ? cur_inst->name : "—";
+    if (ImGui::BeginCombo("##instance_combo", cur_name.c_str())) {
+        for (const auto& up : instance_manager_.all()) {
+            bool sel = (cur_inst == up.get());
+            if (ImGui::Selectable(up->name.c_str(), sel)) {
+                instance_manager_.set_selected(up.get());
+                config_.selected_version = up->mc_version;
+                config_.mod_loader = up->mod_loader;
+                config_.memory_mb = up->memory_mb;
+                for (int i = 0; i < RAM_OPTIONS_COUNT; ++i)
+                    if (RAM_OPTIONS[i] == up->memory_mb) { memory_index_ = i; break; }
+                save_settings();
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+")) {
+        int n = 1;
+        std::string name;
+        do { name = "instance-" + std::to_string(n++); } while (instance_manager_.find(name));
+        std::string seed_v = config_.selected_version.empty() ? "1.20.1" : config_.selected_version;
+        Instance* ni = instance_manager_.create(name, seed_v, seed_v, ModLoader::Vanilla);
+        if (ni) {
+            ni->memory_mb = 2048;
+            ni->save();
+            instance_manager_.set_selected(ni);
+            config_.selected_version = ni->mc_version;
+            config_.mod_loader = ni->mod_loader;
+            config_.memory_mb = ni->memory_mb;
+            save_settings();
+        }
+    }
+    ImGui::SameLine();
+    ImGui::Text("Instance");
  
  
  
@@ -633,7 +690,7 @@ void Launcher::draw_ui() {
                              << config_.selected_version);
                     set_status(sfmt(L.fabric_not_installed, config_.selected_version), 0.0f);
                 } else {
-                    fs::path mods = launcher_paths::minecraft_dir() / "mods";
+                    fs::path mods = (instance_manager_.get_selected() ? instance_manager_.get_selected()->mods_dir() : launcher_paths::minecraft_dir() / "mods");
                     std::error_code ec;
                     fs::create_directories(mods, ec);
                     const auto mods_u8 = mods.u8string();
@@ -649,7 +706,7 @@ void Launcher::draw_ui() {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.mods_need_fabric_tip.c_str());
         }
         if (ImGui::Button(L.resource_packs.c_str(), ImVec2(-1, 0))) {
-            fs::path rp = launcher_paths::minecraft_dir() / "resourcepacks";
+            fs::path rp = (instance_manager_.get_selected() ? instance_manager_.get_selected()->resource_packs_dir() : launcher_paths::minecraft_dir() / "resourcepacks");
             std::error_code ec;
             fs::create_directories(rp, ec);
             const auto rp_u8 = rp.u8string();
@@ -772,6 +829,18 @@ void Launcher::handle_play_button() {
  
 void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& L) {
     try {
+    Instance* inst = instance_manager_.get_selected();
+    if (!inst) {
+        set_status(L.launch_failed, 0.0f);
+        is_working = false;
+        return;
+    }
+    inst->mc_version = cfg.selected_version;
+    inst->memory_mb = cfg.memory_mb;
+    inst->mod_loader = cfg.mod_loader;
+    inst->nickname = cfg.nickname;
+    inst->ensure_layout();
+    inst->save();
     if (MinecraftInstaller::is_cancelled()) {
         is_working = false;
         return;
@@ -818,7 +887,7 @@ void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& 
             return;
         }
         set_status(L.installing_perf_mods, 0.45f);
-        if (!MinecraftInstaller::installPerformanceMods(launch_version, mc_version)) {
+        if (!MinecraftInstaller::installPerformanceMods(inst->game_dir(), mc_version)) {
             set_status(L.mods_failed, 0.90f);
         }
     }
@@ -835,8 +904,9 @@ void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& 
         is_working = false;
         return;
     }
-    bool launched = JavaLauncher::launch(cfg.nickname, launch_version,
-                                         cfg.memory_mb, /*wait_for_exit=*/true);
+    inst->version_id = launch_version;
+    inst->save();
+    bool launched = JavaLauncher::launch(*inst, /*wait_for_exit=*/true);
 
     show_window_requested_ = true;
 
