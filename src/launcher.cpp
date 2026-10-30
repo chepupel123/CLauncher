@@ -566,20 +566,102 @@ void Launcher::draw_ui() {
     }
     ImGui::SameLine();
     if (ImGui::Button("+")) {
-        int n = 1;
-        std::string name;
-        do { name = "instance-" + std::to_string(n++); } while (instance_manager_.find(name));
-        std::string seed_v = config_.selected_version.empty() ? "1.20.1" : config_.selected_version;
-        Instance* ni = instance_manager_.create(name, seed_v, seed_v, ModLoader::Vanilla);
-        if (ni) {
-            ni->memory_mb = 2048;
-            ni->save();
-            instance_manager_.set_selected(ni);
-            config_.selected_version = ni->mc_version;
-            config_.mod_loader = ni->mod_loader;
-            config_.memory_mb = ni->memory_mb;
-            save_settings();
+        std::snprintf(instance_name_buf_, sizeof(instance_name_buf_), "New Instance");
+        ImGui::OpenPopup("Create Instance");
+    }
+
+    if (ImGui::BeginPopupModal("Create Instance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Enter a name for the new instance:");
+        ImGui::InputText("##inst_name", instance_name_buf_, sizeof(instance_name_buf_));
+
+        std::string new_name(instance_name_buf_);
+        bool invalid_chars = (new_name.find_first_of("\\/:*?\"<>|") != std::string::npos || new_name == "." || new_name == "..");
+        bool is_empty = new_name.empty();
+        bool exists = (instance_manager_.find(new_name) != nullptr);
+
+        if (is_empty) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Name cannot be empty");
+        } else if (invalid_chars) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Name contains invalid characters (\\ / : * ? \" < > |)");
+        } else if (exists) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Instance with this name already exists");
         }
+
+        ImGui::Separator();
+
+        bool can_create = !is_empty && !invalid_chars && !exists;
+        if (!can_create) ImGui::BeginDisabled();
+
+        if (ImGui::Button("Create", ImVec2(120, 0))) {
+            std::string seed_v = config_.selected_version.empty() ? "1.20.1" : config_.selected_version;
+            Instance* ni = instance_manager_.create(new_name, seed_v, seed_v, config_.mod_loader);
+            if (ni) {
+                ni->memory_mb = config_.memory_mb;
+                ni->nickname = nickname_buf_;
+                ni->save();
+
+                instance_manager_.set_selected(ni);
+                config_.selected_version = ni->mc_version;
+                config_.mod_loader = ni->mod_loader;
+                config_.memory_mb = ni->memory_mb;
+
+                for (int i = 0; i < RAM_OPTIONS_COUNT; ++i)
+                    if (RAM_OPTIONS[i] == ni->memory_mb) { memory_index_ = i; break; }
+
+                save_settings();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (!can_create) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    bool can_delete = (cur_inst != nullptr) && (instance_manager_.all().size() > 1) && !is_working;
+    if (!can_delete) ImGui::BeginDisabled();
+    if (ImGui::Button("-")) ImGui::OpenPopup("Delete Instance");
+    if (!can_delete) ImGui::EndDisabled();
+
+    if (ImGui::BeginPopupModal("Delete Instance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (cur_inst) {
+            ImGui::Text("Are you sure you want to delete instance '%s'?", cur_inst->name.c_str());
+
+            static bool permanent_delete = false;
+            ImGui::Checkbox("Delete permanently (skip trash)", &permanent_delete);
+
+            if (!permanent_delete) {
+                ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Instance will be moved to ~/.clauncher/trash/");
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "WARNING: All mods and saves will be permanently deleted!");
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Yes, Delete", ImVec2(120, 0))) {
+                instance_manager_.remove(cur_inst->name, permanent_delete);
+                permanent_delete = false;
+
+                Instance* next_inst = instance_manager_.get_selected();
+                if (next_inst) {
+                    config_.selected_version = next_inst->mc_version;
+                    config_.mod_loader = next_inst->mod_loader;
+                    config_.memory_mb = next_inst->memory_mb;
+                    for (int i = 0; i < RAM_OPTIONS_COUNT; ++i)
+                        if (RAM_OPTIONS[i] == next_inst->memory_mb) { memory_index_ = i; break; }
+                }
+                save_settings();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                permanent_delete = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
     }
     ImGui::SameLine();
     ImGui::Text("Instance");
