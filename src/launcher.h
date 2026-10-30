@@ -5,8 +5,8 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
-
-enum class ModLoader { Vanilla, Fabric };
+#include "mod_loader.h"
+#include "instance_manager.h"
 
 enum class UiLang { En = 0, Ru = 1 };
 
@@ -64,6 +64,8 @@ public:
 
 private:
     Config config_;
+    InstanceManager instance_manager_;
+    char instance_name_buf_[64] = "New Instance";
     std::vector<std::string> release_versions_;
     int memory_index_ = 1;
     std::atomic<bool> should_close_{false};
