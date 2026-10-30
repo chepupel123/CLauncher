@@ -564,8 +564,9 @@ void Launcher::draw_ui() {
         }
         ImGui::EndCombo();
     }
+    ImVec2 btn_size(28, 0);
     ImGui::SameLine();
-    if (ImGui::Button("+")) {
+    if (ImGui::Button("+", btn_size)) {
         std::snprintf(instance_name_buf_, sizeof(instance_name_buf_), "New Instance");
         ImGui::OpenPopup("Create Instance");
     }
@@ -623,7 +624,7 @@ void Launcher::draw_ui() {
     ImGui::SameLine();
     bool can_delete = (cur_inst != nullptr) && (instance_manager_.all().size() > 1) && !is_working;
     if (!can_delete) ImGui::BeginDisabled();
-    if (ImGui::Button("-")) ImGui::OpenPopup("Delete Instance");
+    if (ImGui::Button("-", btn_size)) ImGui::OpenPopup("Delete Instance");
     if (!can_delete) ImGui::EndDisabled();
 
     if (ImGui::BeginPopupModal("Delete Instance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -663,7 +664,7 @@ void Launcher::draw_ui() {
         }
         ImGui::EndPopup();
     }
-    ImGui::SameLine();
+    ImGui::SameLine(0, 12);
     ImGui::Text("Instance");
  
  
