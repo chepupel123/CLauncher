@@ -46,6 +46,8 @@ set(SOURCES
     src/logger.cpp
     src/curl_tls.cpp
     src/single_instance.cpp
+    src/instance.cpp
+    src/instance_manager.cpp
 )
 
 # ImGui sources (if vendored)
@@ -90,7 +92,7 @@ if(WIN32)
 else()
     target_link_libraries(CLauncher PRIVATE
         glfw
-        OpenGL::OpenGL
+        OpenGL::GL
         CURL::libcurl
         Threads::Threads
     )
