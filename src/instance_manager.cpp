@@ -2,6 +2,10 @@
 #include "logger.h"
 
 #include <algorithm>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -57,13 +61,33 @@ Instance* InstanceManager::create(const std::string& name,
     return instances_.back().get();
 }
 
-bool InstanceManager::remove(const std::string& name) {
+bool InstanceManager::remove(const std::string& name, bool permanent) {
     auto it = std::find_if(instances_.begin(), instances_.end(),
         [&](const auto& p) { return p->name == name; });
     if (it == instances_.end()) return false;
 
     std::error_code ec;
-    fs::remove_all((*it)->root_path, ec);
+    if (permanent) {
+        // Полное удаление
+        fs::remove_all((*it)->root_path, ec);
+    } else {
+        // Перемещение в корзину
+        auto trash_dir = base_dir_.parent_path() / "trash";
+        fs::create_directories(trash_dir, ec);
+
+        auto now = std::chrono::system_clock::now();
+        auto in_time_t = std::chrono::system_clock::to_time_t(now);
+        std::stringstream ss;
+        ss << std::put_time(std::localtime(&in_time_t), "%Y%m%d_%H%M%S");
+
+        fs::path trash_path = trash_dir / (name + "_" + ss.str());
+        fs::rename((*it)->root_path, trash_path, ec);
+        if (ec) {
+            // Если rename не удался (например, разные диски), делаем полное удаление
+            LOG_WARN("Failed to move to trash, deleting permanently: " << ec.message());
+            fs::remove_all((*it)->root_path, ec);
+        }
+    }
 
     if (selected_ == it->get()) selected_ = nullptr;
     instances_.erase(it);
