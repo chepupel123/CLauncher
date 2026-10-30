@@ -661,22 +661,6 @@ static bool launch_impl(const std::string& nickname_raw,
     if (isFabric) {
         add_libraries_from(profile);
 
-        bool has_loader = false, has_mixin = false, has_asm = false, has_intermediary = false;
-        if (!profile.is_null() && profile.contains("libraries")) {
-            for (const auto& lib : profile["libraries"]) {
-                if (!lib.contains("name")) continue;
-                std::string n = lib["name"].get<std::string>();
-                if (n.find(":fabric-loader:") != std::string::npos) has_loader = true;
-                else if (n.find(":sponge-mixin:") != std::string::npos) has_mixin = true;
-                else if (n.find(":intermediary")  != std::string::npos) has_intermediary = true;
-                else if (n.find(":asm")           != std::string::npos) has_asm = true;
-            }
-        }
-        if (!has_loader || !has_mixin || !has_asm || !has_intermediary) {
-            LOG_ERROR("Не хватает критичных библиотек Fabric");
-            return false;
-        }
-
         fs::path vanilla_json_path = vanilla_dir / (mcVersion + ".json");
         if (fs::exists(vanilla_json_path)) {
             std::ifstream v_file(vanilla_json_path);
