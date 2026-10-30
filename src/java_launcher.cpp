@@ -49,7 +49,8 @@ static const char CLASSPATH_SEP = ':';
 static std::string getOptimizationFlags(int javaVersion) {
     if (javaVersion >= 17) {
         const unsigned gc_threads = std::max(1u, std::thread::hardware_concurrency() / 2);
-        std::string flags = "-XX:+UseG1GC "
+        std::string flags = "-XX:+UnlockExperimentalVMOptions "
+                            "-XX:+UseG1GC "
                             "-XX:MaxGCPauseMillis=100 "
                             "-XX:+ParallelRefProcEnabled "
                             "-XX:G1NewSizePercent=20 "
