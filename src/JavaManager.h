@@ -22,7 +22,8 @@ private:
     {
         Java8,
         Java17,
-        Java21
+        Java21,
+        Java25
     };
 
     std::filesystem::path runtimeDir;
