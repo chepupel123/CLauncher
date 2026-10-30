@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 
@@ -26,7 +27,7 @@ namespace MinecraftInstaller
     // Причина последнего сбоя install / installFabric. Пусто, если её не было.
     std::string last_error();
 
-    bool installPerformanceMods(const std::string& fabric_version_name,
+    bool installPerformanceMods(const std::filesystem::path& game_dir,
                                 const std::string& mc_version);
     std::string findFabricDir(const std::string& mc_version);
 }
