@@ -506,23 +506,29 @@ static bool is_version_less(const std::string& v, int target_major, int target_m
     return pat < target_patch;
 }
 
-bool JavaLauncher::launch(const std::string& nickname_raw,
-                          const std::string& version,
-                          int memory_mb,
-                          bool wait_for_exit) {
+static bool launch_impl(const std::string& nickname_raw,
+                        const std::string& version,
+                        const std::string& mc_version_hint,
+                        int memory_mb,
+                        const fs::path& game_dir,
+                        const fs::path& assets_dir,
+                        const fs::path& mods_path,
+                        const fs::path& argfile_dir,
+                        const std::string& java_override,
+                        bool wait_for_exit) {
 
     const std::string nickname = sanitize_username(nickname_raw);
 
-    fs::path minecraft_dir = launcher_paths::minecraft_dir();
-    fs::path versions_dir  = minecraft_dir / "versions";
+    fs::path minecraft_dir = launcher_paths::shared_dir();
+    fs::path versions_dir  = launcher_paths::shared_versions_dir();
     fs::path version_dir   = versions_dir / version;
 
     JavaManager javaManager;
     std::string java_path;
     try {
         JavaInstance inst;
-        inst.major = javaManager.requiredMajor(version);
-        java_path = javaManager.resolveJava(inst).string();
+        inst.major = javaManager.requiredMajor(mc_version_hint.empty() ? version : mc_version_hint);
+        java_path = java_override.empty() ? javaManager.resolveJava(inst).string() : java_override;
     } catch (const std::exception& e) {
         LOG_ERROR("Не удалось получить Java: " << e.what());
         return false;
@@ -544,7 +550,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     json profile;
     std::string mainClass   = "net.minecraft.client.main.Main";
     std::string assetIndex  = "legacy";
-    std::string mcVersion   = version;
+    std::string mcVersion   = mc_version_hint.empty() ? version : mc_version_hint;
 
     fs::path profile_json = version_dir / (version + ".json");
     if (fs::exists(profile_json)) {
@@ -614,7 +620,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
         if (fs::exists(lib_path)) return lib_path;
         lib_path = vanilla_dir / "libraries" / group_path / artifact / lib_version / jar_name;
         if (fs::exists(lib_path)) return lib_path;
-        lib_path = minecraft_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+        lib_path = launcher_paths::shared_libraries_dir() / group_path / artifact / lib_version / jar_name;
         if (fs::exists(lib_path)) return lib_path;
         return {};
     };
@@ -742,7 +748,7 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     }
 
     {
-        fs::path mods_dir = version_dir / "mods";
+        fs::path mods_dir = mods_path;
         if (fs::exists(mods_dir) && !fs::is_empty(mods_dir)) {
             jvm_args.push_back("-Dfabric.addMods=" + mods_dir.string());
             LOG_INFO("Папка модов подключена: " << mods_dir.string());
@@ -757,15 +763,16 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     game_args.push_back("--clientId");    game_args.push_back("0");
     game_args.push_back("--xuid");        game_args.push_back("0");
     game_args.push_back("--version");     game_args.push_back(version);
-    game_args.push_back("--gameDir");     game_args.push_back(minecraft_dir.string());
-    game_args.push_back("--assetsDir");   game_args.push_back((minecraft_dir / "assets").string());
+    game_args.push_back("--gameDir");     game_args.push_back(game_dir.string());
+    game_args.push_back("--assetsDir");   game_args.push_back(assets_dir.string());
     game_args.push_back("--assetIndex");  game_args.push_back(assetIndex);
     game_args.push_back("--userProperties"); game_args.push_back("{}");
     game_args.push_back("--versionType"); game_args.push_back("release");
     game_args.push_back("--fullScreen");
 
     std::vector<std::string> exec_args;
-    fs::path argfile = version_dir / "java-args.argfile";
+    fs::path argfile = argfile_dir / "java-args.argfile";
+    { std::error_code mk; fs::create_directories(argfile_dir, mk); }
     bool use_argfile = (javaVersion >= 9);
 
     if (use_argfile) {
@@ -828,6 +835,24 @@ bool JavaLauncher::launch(const std::string& nickname_raw,
     LOG_ERROR("Игра упала сразу после старта (код " << ret << ")");
     log_game_output_tail();
     return false;
+}
+
+
+bool JavaLauncher::launch(const std::string& nickname_raw,
+                          const std::string& version_id,
+                          int memory_mb,
+                          bool wait_for_exit) {
+    return launch_impl(nickname_raw, version_id, version_id, memory_mb,
+                       launcher_paths::minecraft_dir(),
+                       launcher_paths::minecraft_dir() / "assets", {},
+                       launcher_paths::minecraft_dir(), {}, wait_for_exit);
+}
+
+bool JavaLauncher::launch(const Instance& inst, bool wait_for_exit) {
+    return launch_impl(inst.nickname, inst.version_id, inst.mc_version,
+                       inst.memory_mb, inst.game_dir(),
+                       launcher_paths::shared_assets_dir(), inst.mods_dir(),
+                       inst.root_path, inst.java_path, wait_for_exit);
 }
 
 void JavaLauncher::open_url(const std::string& url) {
