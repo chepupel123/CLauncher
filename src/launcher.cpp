@@ -73,7 +73,7 @@ static std::string sfmt(const std::string& tmpl, const std::string& arg) {
  
 static const L10n& l10n_en() {
     static const L10n L{
-                "CLauncher",
+                "CLauncher 1.0.3",
              "Language",
              "Nickname",
               "Version",
@@ -126,7 +126,7 @@ static const L10n& l10n_en() {
  
 static const L10n& l10n_ru() {
     static const L10n L{
-                "CЛаунчер",
+                "CЛаунчер 1.0.3",
              "Язык",
              "Никнейм",
               "Версия",
