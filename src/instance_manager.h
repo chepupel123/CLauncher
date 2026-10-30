@@ -14,7 +14,7 @@ public:
                      const std::string& version_id,
                      ModLoader loader);
 
-    bool remove(const std::string& name);
+    bool remove(const std::string& name, bool permanent = false);
     Instance* find(const std::string& name) const;
 
     Instance* get_selected() const         { return selected_; }
