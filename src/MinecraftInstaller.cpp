@@ -238,7 +238,7 @@ namespace
             }
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            curl_easy_setopt(curl, CURLOPT_USERAGENT, "Minecraft-Launcher/1.0");
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "CLauncher/1.0.3");
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
             curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -273,7 +273,7 @@ namespace
         std::string data;
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Minecraft-Launcher/1.0");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "CLauncher/1.0.3");
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
@@ -391,7 +391,7 @@ namespace
             apply_tls(curl);
             curl_easy_setopt(curl, CURLOPT_URL, it.url.c_str());
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            curl_easy_setopt(curl, CURLOPT_USERAGENT, "Minecraft-Launcher/1.0");
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "CLauncher/1.0.3");
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
             curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
