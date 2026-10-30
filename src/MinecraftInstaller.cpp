@@ -1375,6 +1375,10 @@ const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILI
     {"1.20.4", "0.16.5"},
     {"1.20.6", "0.16.14"},
     {"1.21.1", "0.16.14"},
+    // Current stable loader fallback values for year-based releases.
+    {"26.1", "0.20.1"},
+    {"26.2", "0.20.1"},
+    {"26.3", "0.20.1"},
 };
 
 std::string FabricVersionMap::getLoaderForVersion(const std::string& mc_version)
@@ -1397,6 +1401,8 @@ std::string FabricVersionMap::getLoaderForVersion(const std::string& mc_version)
 
 std::string FabricVersionMap::getClosestVersion(const std::string& mc_version)
 {
+    // The API can be temporarily unavailable; use a recent stable loader for 26.x.
+    if (mc_version.rfind("26.", 0) == 0) return "0.20.1";
 
     size_t p1 = mc_version.find('.');
     size_t p2 = (p1 == std::string::npos) ? std::string::npos : mc_version.find('.', p1 + 1);
