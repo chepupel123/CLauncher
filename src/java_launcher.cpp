@@ -48,22 +48,26 @@ static const char CLASSPATH_SEP = ':';
 
 static std::string getOptimizationFlags(int javaVersion) {
     if (javaVersion >= 17) {
-        return "-XX:+UseG1GC "
-               "-XX:MaxGCPauseMillis=100 "
-               "-XX:+ParallelRefProcEnabled "
-               "-XX:G1NewSizePercent=20 "
-               "-XX:G1MaxNewSizePercent=40 "
-               "-XX:G1HeapRegionSize=4m "
-               "-XX:G1ReservePercent=15 "
-               "-XX:G1HeapWastePercent=5 "
-               "-XX:InitiatingHeapOccupancyPercent=20 "
-               "-XX:G1MixedGCLiveThresholdPercent=90 "
-               "-XX:G1RSetUpdatingPauseTimePercent=5 "
-               "-XX:SurvivorRatio=8 "
-               "-XX:MaxTenuringThreshold=4 "
-               "-XX:+DisableExplicitGC "
-               "-XX:+PerfDisableSharedMem "
-               "-XX:ParallelGCThreads=3";
+        const unsigned gc_threads = std::max(1u, std::thread::hardware_concurrency() / 2);
+        std::string flags = "-XX:+UseG1GC "
+                            "-XX:MaxGCPauseMillis=100 "
+                            "-XX:+ParallelRefProcEnabled "
+                            "-XX:G1NewSizePercent=20 "
+                            "-XX:G1MaxNewSizePercent=40 "
+                            "-XX:G1HeapRegionSize=4m "
+                            "-XX:G1ReservePercent=15 "
+                            "-XX:G1HeapWastePercent=5 "
+                            "-XX:InitiatingHeapOccupancyPercent=20 "
+                            "-XX:G1MixedGCLiveThresholdPercent=90 "
+                            "-XX:G1RSetUpdatingPauseTimePercent=5 "
+                            "-XX:SurvivorRatio=8 "
+                            "-XX:MaxTenuringThreshold=4 "
+                            "-XX:+DisableExplicitGC "
+                            "-XX:+PerfDisableSharedMem "
+                            "-XX:ParallelGCThreads=" + std::to_string(gc_threads);
+        // Compact Object Headers support is available in current JDKs (25+), not Java 21.
+        if (javaVersion >= 25) flags += " -XX:+UseCompactObjectHeaders";
+        return flags;
     }
     return "-XX:+UseParallelGC -XX:MaxGCPauseMillis=50 -XX:+DisableExplicitGC";
 }
