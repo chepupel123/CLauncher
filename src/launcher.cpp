@@ -33,14 +33,19 @@ static const int RAM_OPTIONS[] = {512, 1024, 2048, 3072, 4096};
 static const int RAM_OPTIONS_COUNT = 5;
 
 static bool version_supports_fabric(const std::string& version) {
-    if (version.size() < 4 || version[0] != '1' || version[1] != '.') return false;
-    size_t pos = 2;
-    int minor = 0;
-    while (pos < version.size() && std::isdigit((unsigned char)version[pos])) {
-        minor = minor * 10 + (version[pos] - '0');
-        ++pos;
+    // Поддержка Fabric для линейки 1.x (начиная с 1.14)
+    if (version.size() >= 4 && version[0] == '1' && version[1] == '.') {
+        size_t pos = 2;
+        int minor = 0;
+        while (pos < version.size() && std::isdigit((unsigned char)version[pos])) {
+            minor = minor * 10 + (version[pos] - '0');
+            ++pos;
+        }
+        return minor >= 14;
     }
-    return minor >= 14;
+
+    // Поддержка Fabric для year-based версий (26.1, 26.2, 26.3+)
+    return version.rfind("26.", 0) == 0;
 }
  
 static bool nickname_char_ok(unsigned int c) {
