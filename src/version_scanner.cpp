@@ -7,7 +7,7 @@
 namespace fs = std::filesystem;
 
 std::string VersionScanner::get_versions_path() {
-    return (launcher_paths::minecraft_dir() / "versions").string();
+    return launcher_paths::shared_versions_dir().string();
 }
 
 std::vector<std::string> VersionScanner::scan_versions() {
