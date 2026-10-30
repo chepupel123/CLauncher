@@ -941,7 +941,7 @@ bool MinecraftInstaller::install(const std::string& version)
     g_last_error.clear();
     try
     {
-        fs::path minecraft = launcher_paths::minecraft_dir();
+        fs::path minecraft = launcher_paths::shared_dir();
         fs::path version_dir = minecraft / "versions" / version;
         fs::path version_json = version_dir / (version + ".json");
         fs::path client_jar = version_dir / (version + ".jar");
@@ -1054,13 +1054,13 @@ bool MinecraftInstaller::install(const std::string& version)
     }
 }
 
-bool MinecraftInstaller::installPerformanceMods(const std::string&,
+bool MinecraftInstaller::installPerformanceMods(const fs::path& game_dir,
                                                 const std::string& mc_version)
 {
     g_cancel_requested.store(false);
     reset_speed_state();
     try {
-        fs::path mods_dir = launcher_paths::minecraft_dir() / "mods";
+        fs::path mods_dir = game_dir / "mods";
         fs::create_directories(mods_dir);
 
 
@@ -1150,7 +1150,7 @@ bool MinecraftInstaller::installPerformanceMods(const std::string&,
 
 std::string MinecraftInstaller::findFabricDir(const std::string& mc_version)
 {
-    fs::path versions_dir = launcher_paths::minecraft_dir() / "versions";
+    fs::path versions_dir = launcher_paths::shared_versions_dir();
     std::error_code ec;
     if (!fs::exists(versions_dir)) return "";
 
@@ -1177,7 +1177,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
     g_cancel_requested.store(false);
     fs::path fabric_temp_dir;
     try {
-        fs::path minecraft_dir = launcher_paths::minecraft_dir();
+        fs::path minecraft_dir = launcher_paths::shared_dir();
         std::string existing_fabric_dir = findFabricDir(version);
         if (!existing_fabric_dir.empty()) return existing_fabric_dir;
 
@@ -1188,8 +1188,8 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         }
 
 
-        fs::path launcher_dir = launcher_paths::launcher_dir();
-        fs::path installer_path = launcher_dir / "fabric-installer.jar";
+        fs::path installer_path = launcher_paths::cache_dir() / "fabric-installer.jar";
+        fs::path launcher_dir = launcher_paths::cache_dir();
         if (!fs::exists(installer_path)) {
             LOG_INFO("Downloading Fabric Installer...");
             fs::create_directories(launcher_dir);
