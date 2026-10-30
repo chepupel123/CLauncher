@@ -137,6 +137,8 @@ JavaManager::JavaVersion JavaManager::getRequiredJava(const std::string& version
     std::size_t pos = 0;
     int major = parseVersionPart(mcVersion, pos);
 
+    if (major >= 26) return JavaVersion::Java25;
+
     if (major == 1) {
         int minor = parseVersionPart(mcVersion, pos);
         if (minor < 17) return JavaVersion::Java8;
@@ -148,10 +150,8 @@ JavaManager::JavaVersion JavaManager::getRequiredJava(const std::string& version
         return JavaVersion::Java21;
     }
 
-    // Ветка 26.x и новее отфильтрована в VersionManager. Это предохранитель
-    // на случай ручного вызова с неподдерживаемой версией.
     throw std::runtime_error(
-        "Unsupported Minecraft version (only the 1.x line is supported): " + mcVersion);
+        "Unsupported Minecraft version (expected the 1.x or 26.x+ line): " + mcVersion);
 }
 
 std::string JavaManager::getDownloadUrl(JavaVersion version)
@@ -162,7 +162,7 @@ std::string JavaManager::getDownloadUrl(JavaVersion version)
     const char* os = "linux";
 #endif
 
-    const char* versions[] = {"8", "17", "21"};
+    const char* versions[] = {"8", "17", "21", "25"};
     int idx = static_cast<int>(version);
 
 
@@ -174,7 +174,7 @@ std::string JavaManager::getDownloadUrl(JavaVersion version)
 
 fs::path JavaManager::getJavaDirectory(JavaVersion version) const
 {
-    const char* dirs[] = {"java8", "java17", "java21"};
+    const char* dirs[] = {"java8", "java17", "java21", "java25"};
     return runtimeDir / dirs[static_cast<int>(version)];
 }
 
@@ -285,6 +285,7 @@ JavaManager::JavaVersion JavaManager::javaVersionFromMajor(int major) const
         case 8:  return JavaVersion::Java8;
         case 17: return JavaVersion::Java17;
         case 21: return JavaVersion::Java21;
+        case 25: return JavaVersion::Java25;
         default:
             throw std::runtime_error("Unsupported Java major: " + std::to_string(major));
     }
@@ -296,6 +297,7 @@ int JavaManager::requiredMajor(const std::string& mcVersion) const
         case JavaVersion::Java8:  return 8;
         case JavaVersion::Java17: return 17;
         case JavaVersion::Java21: return 21;
+        case JavaVersion::Java25: return 25;
     }
     throw std::runtime_error("Unsupported Java requirement");
 }
@@ -324,6 +326,7 @@ void JavaManager::verifyJavaInstallation(const fs::path& javaBinary, JavaVersion
         case JavaVersion::Java8:  needVer = 8; break;
         case JavaVersion::Java17: needVer = 17; break;
         case JavaVersion::Java21: needVer = 21; break;
+        case JavaVersion::Java25: needVer = 25; break;
     }
 
     if (ver != needVer) {
