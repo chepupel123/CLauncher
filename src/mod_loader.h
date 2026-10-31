@@ -2,5 +2,7 @@
 
 enum class ModLoader {
     Vanilla,
-    Fabric
+    Fabric,
+    Forge,
+    NeoForge
 };
