@@ -73,7 +73,7 @@ static std::string sfmt(const std::string& tmpl, const std::string& arg) {
  
 static const L10n& l10n_en() {
     static const L10n L{
-                "CLauncher 1.0.3",
+                "CLauncher",
              "Language",
              "Nickname",
               "Version",
@@ -126,7 +126,7 @@ static const L10n& l10n_en() {
  
 static const L10n& l10n_ru() {
     static const L10n L{
-                "CЛаунчер 1.0.3",
+                "CЛаунчер",
              "Язык",
              "Никнейм",
               "Версия",
@@ -240,7 +240,7 @@ void Launcher::init() {
 #endif
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
  
-    window_ = glfwCreateWindow(700, 550, "CLauncher", nullptr, nullptr);
+    window_ = glfwCreateWindow(700, 550, "CLauncher 1.0.3", nullptr, nullptr);
     if (!window_) throw std::runtime_error("GLFW window creation failed");
  
     glfwMakeContextCurrent(window_);
@@ -738,8 +738,9 @@ void Launcher::draw_ui() {
     }
 
     if (fabric_ok) {
-        if (ImGui::BeginCombo("##loader_combo",
-                              config_.mod_loader == ModLoader::Fabric ? "Fabric" : "Vanilla")) {
+        const char* loader_label = config_.mod_loader == ModLoader::Fabric ? "Fabric" :
+                                   config_.mod_loader == ModLoader::Forge ? "Forge" : "Vanilla";
+        if (ImGui::BeginCombo("##loader_combo", loader_label)) {
             if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla)) {
                 config_.mod_loader = ModLoader::Vanilla;
                 preferred_mod_loader_ = ModLoader::Vanilla;
@@ -752,6 +753,11 @@ void Launcher::draw_ui() {
                 save_settings();
             }
             if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
+            if (ImGui::Selectable("Forge", config_.mod_loader == ModLoader::Forge)) {
+                config_.mod_loader = ModLoader::Forge;
+                save_settings();
+            }
+            if (config_.mod_loader == ModLoader::Forge) ImGui::SetItemDefaultFocus();
             ImGui::EndCombo();
         }
     } else {
@@ -786,6 +792,20 @@ void Launcher::draw_ui() {
                         reinterpret_cast<const char*>(mods_u8.data()), mods_u8.size());
                     JavaLauncher::open_url(mods_path_utf8);
                 }
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.my_mods_tip.c_str());
+            ImGui::SameLine();
+        } else if (config_.mod_loader == ModLoader::Forge) {
+            if (ImGui::Button(L.my_mods.c_str(), ImVec2(340, 0))) {
+                fs::path mods = instance_manager_.get_selected()
+                    ? instance_manager_.get_selected()->mods_dir()
+                    : launcher_paths::minecraft_dir() / "mods";
+                std::error_code ec;
+                fs::create_directories(mods, ec);
+                const auto mods_u8 = mods.u8string();
+                const std::string mods_path_utf8(
+                    reinterpret_cast<const char*>(mods_u8.data()), mods_u8.size());
+                JavaLauncher::open_url(mods_path_utf8);
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.my_mods_tip.c_str());
             ImGui::SameLine();
@@ -942,16 +962,26 @@ void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& 
         set_status(sfmt(L.installing_vanilla, mc_version), 0.05f);
         install_ok = MinecraftInstaller::install(mc_version);
         launch_version = mc_version;
-    } else {
+    } else if (cfg.mod_loader == ModLoader::Fabric) {
         set_status(sfmt(L.installing_fabric_for, mc_version), 0.05f);
         std::string fabric_ver = MinecraftInstaller::installFabric(mc_version);
         if (!fabric_ver.empty()) {
             install_ok = true;
             launch_version = fabric_ver;
             set_status(sfmt(L.fabric_installed, launch_version), 0.40f);
-        } else {
-            install_ok = false;
         }
+    } else if (cfg.mod_loader == ModLoader::Forge) {
+        set_status("Installing Forge for " + mc_version + "...", 0.05f);
+        std::string forge_ver = MinecraftInstaller::installForge(mc_version);
+        if (!forge_ver.empty()) {
+            install_ok = true;
+            launch_version = forge_ver;
+            set_status("Forge installed: " + launch_version, 0.40f);
+        }
+    } else {
+        set_status("NeoForge installation is not implemented yet", 0.0f);
+        is_working = false;
+        return;
     }
  
     if (MinecraftInstaller::is_cancelled()) {
