@@ -23,6 +23,7 @@ namespace MinecraftInstaller
 
     bool install(const std::string& version);
     std::string installFabric(const std::string& version);
+    std::string installForge(const std::string& mc_version);
 
     // Причина последнего сбоя install / installFabric. Пусто, если её не было.
     std::string last_error();
