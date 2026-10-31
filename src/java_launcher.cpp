@@ -813,19 +813,26 @@ static bool launch_impl(const std::string& nickname_raw,
     }
 
     std::vector<std::string> game_args;
-    game_args.push_back("--username");    game_args.push_back(nickname);
-    game_args.push_back("--uuid");        game_args.push_back(offline_uuid(nickname));
-    game_args.push_back("--accessToken"); game_args.push_back("null");
-    game_args.push_back("--userType");    game_args.push_back("mojang");
-    game_args.push_back("--clientId");    game_args.push_back("0");
-    game_args.push_back("--xuid");        game_args.push_back("0");
-    game_args.push_back("--version");     game_args.push_back(version);
-    game_args.push_back("--gameDir");     game_args.push_back(game_dir.string());
-    game_args.push_back("--assetsDir");   game_args.push_back(assets_dir.string());
-    game_args.push_back("--assetIndex");  game_args.push_back(assetIndex);
-    game_args.push_back("--userProperties"); game_args.push_back("{}");
-    game_args.push_back("--versionType"); game_args.push_back("release");
-    game_args.push_back("--fullScreen");
+    const bool has_legacy_args = profile.contains("minecraftArguments") &&
+                                 profile["minecraftArguments"].is_string();
+
+    // Legacy Forge profiles provide the full argument list themselves. Avoid
+    // duplicating options such as --gameDir and --username.
+    if (!has_legacy_args) {
+        game_args.push_back("--username");    game_args.push_back(nickname);
+        game_args.push_back("--uuid");        game_args.push_back(offline_uuid(nickname));
+        game_args.push_back("--accessToken"); game_args.push_back("null");
+        game_args.push_back("--userType");    game_args.push_back("mojang");
+        game_args.push_back("--clientId");    game_args.push_back("0");
+        game_args.push_back("--xuid");        game_args.push_back("0");
+        game_args.push_back("--version");     game_args.push_back(version);
+        game_args.push_back("--gameDir");     game_args.push_back(game_dir.string());
+        game_args.push_back("--assetsDir");   game_args.push_back(assets_dir.string());
+        game_args.push_back("--assetIndex");  game_args.push_back(assetIndex);
+        game_args.push_back("--userProperties"); game_args.push_back("{}");
+        game_args.push_back("--versionType"); game_args.push_back("release");
+        game_args.push_back("--fullScreen");
+    }
     append_profile_arguments("game", game_args);
 
     std::vector<std::string> exec_args;
