@@ -551,8 +551,10 @@ static bool launch_impl(const std::string& nickname_raw,
     LOG_INFO("Java version: " << javaVersion);
 
     bool isFabric = (version.find("fabric-loader-") == 0);
+    bool isForge = (version.find("-forge-") != std::string::npos);
 
     json profile;
+    bool main_class_from_profile = false;
     std::string mainClass   = "net.minecraft.client.main.Main";
     std::string assetIndex  = "legacy";
     std::string mcVersion   = mc_version_hint.empty() ? version : mc_version_hint;
@@ -565,13 +567,14 @@ static bool launch_impl(const std::string& nickname_raw,
                 file >> profile;
                 if (profile.contains("mainClass")) {
                     mainClass = profile["mainClass"].get<std::string>();
+                    main_class_from_profile = true;
                     LOG_INFO("MainClass from profile: " << mainClass);
                 }
                 if (profile.contains("assetIndex") && profile["assetIndex"].contains("id")) {
                     assetIndex = profile["assetIndex"]["id"].get<std::string>();
                     LOG_INFO("AssetIndex from profile: " << assetIndex);
                 }
-                if (isFabric) {
+                if (isFabric || isForge) {
                     if (profile.contains("inheritsFrom")) {
                         mcVersion = profile["inheritsFrom"].get<std::string>();
                     } else {
@@ -608,6 +611,11 @@ static bool launch_impl(const std::string& nickname_raw,
                 }
             }
         }
+    }
+
+    if (isForge && !main_class_from_profile) {
+        LOG_ERROR("Forge profile does not define mainClass: " << profile_json.string());
+        return false;
     }
 
     if (isFabric) {
@@ -659,7 +667,7 @@ static bool launch_impl(const std::string& nickname_raw,
         }
     };
 
-    if (isFabric) {
+    if (isFabric || isForge) {
         add_libraries_from(profile);
 
         fs::path vanilla_json_path = vanilla_dir / (mcVersion + ".json");
@@ -717,6 +725,59 @@ static bool launch_impl(const std::string& nickname_raw,
         fs::create_directories(natives_dir, ec);
     }
 
+    // Forge's generated profile carries required module-path flags and launchTarget
+    // arguments (notably for 1.20.1+). Keep them profile-driven rather than
+    // hardcoding a Forge main class or a particular Forge build's arguments.
+    auto replace_profile_variables = [&](std::string& arg) {
+        auto replace_all = [&](const std::string& token, const std::string& replacement) {
+            size_t at = 0;
+            while ((at = arg.find(token, at)) != std::string::npos) {
+                arg.replace(at, token.size(), replacement);
+                at += replacement.size();
+            }
+        };
+        replace_all("${auth_player_name}", nickname);
+        replace_all("${version_name}", version);
+        replace_all("${game_directory}", game_dir.string());
+        replace_all("${assets_root}", assets_dir.string());
+        replace_all("${assets_index_name}", assetIndex);
+        replace_all("${auth_uuid}", offline_uuid(nickname));
+        replace_all("${auth_access_token}", "null");
+        replace_all("${user_type}", "mojang");
+        replace_all("${version_type}", "release");
+        // Newer Forge profiles may use these JVM-argument placeholders.
+        replace_all("${library_directory}", launcher_paths::shared_libraries_dir().string());
+        replace_all("${classpath_separator}", std::string(1, CLASSPATH_SEP));
+    };
+
+    auto append_profile_arguments = [&](const char* key, std::vector<std::string>& target) {
+        if (!isForge) return;
+
+        if (profile.contains("arguments")) {
+            if (!profile["arguments"].is_object() || !profile["arguments"].contains(key)) return;
+            const auto& values = profile["arguments"][key];
+            if (!values.is_array()) return;
+            for (const auto& value : values) {
+                if (!value.is_string()) continue; // Forge 1.20.1 arguments are strings.
+                std::string arg = value.get<std::string>();
+                replace_profile_variables(arg);
+                target.push_back(std::move(arg));
+            }
+            return;
+        }
+
+        // Legacy Forge (e.g. Minecraft 1.7.10 / 1.12.2) stores the complete
+        // client argument template in minecraftArguments, including --tweakClass.
+        if (std::string(key) != "game" || !profile.contains("minecraftArguments") ||
+            !profile["minecraftArguments"].is_string()) return;
+        std::istringstream legacy_args(profile["minecraftArguments"].get<std::string>());
+        std::string arg;
+        while (legacy_args >> arg) {
+            replace_profile_variables(arg);
+            target.push_back(std::move(arg));
+        }
+    };
+
     std::vector<std::string> jvm_args;
     jvm_args.push_back("-Xmx" + std::to_string(memory_mb) + "M");
     // -Xms = -Xmx aborts Java instantly if the machine cannot commit that much.
@@ -730,6 +791,7 @@ static bool launch_impl(const std::string& nickname_raw,
     jvm_args.push_back("-Dminecraft.launcher.brand=CLauncher");
     jvm_args.push_back("-Dminecraft.launcher.version=3.0");
     jvm_args.push_back("-Dfile.encoding=UTF-8");
+    append_profile_arguments("jvm", jvm_args);
 
     // CVE-2021-44228 (Log4Shell): 1.18.0 и ниже уязвимы. 1.18.1 и выше — нет.
     if (is_version_less(mcVersion, 1, 18, 1)) {
@@ -758,6 +820,7 @@ static bool launch_impl(const std::string& nickname_raw,
     game_args.push_back("--userProperties"); game_args.push_back("{}");
     game_args.push_back("--versionType"); game_args.push_back("release");
     game_args.push_back("--fullScreen");
+    append_profile_arguments("game", game_args);
 
     std::vector<std::string> exec_args;
     fs::path argfile = argfile_dir / "java-args.argfile";
