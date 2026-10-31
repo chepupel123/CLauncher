@@ -7,10 +7,18 @@
 using json = nlohmann::json;
 
 static const char* modloader_to_str(ModLoader m) {
-    return m == ModLoader::Fabric ? "fabric" : "vanilla";
+    switch (m) {
+        case ModLoader::Fabric: return "fabric";
+        case ModLoader::Forge: return "forge";
+        case ModLoader::NeoForge: return "neoforge";
+        case ModLoader::Vanilla: default: return "vanilla";
+    }
 }
 static ModLoader modloader_from_str(const std::string& s) {
-    return s == "fabric" ? ModLoader::Fabric : ModLoader::Vanilla;
+    if (s == "fabric") return ModLoader::Fabric;
+    if (s == "forge") return ModLoader::Forge;
+    if (s == "neoforge") return ModLoader::NeoForge;
+    return ModLoader::Vanilla;
 }
 
 bool Instance::load(const std::filesystem::path& path) {
