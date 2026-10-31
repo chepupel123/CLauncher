@@ -65,7 +65,7 @@ static bool http_download_file(const std::string& url, const fs::path& path)
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Minecraft-Launcher/1.0");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "CLauncher/1.0.3");
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, http_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
