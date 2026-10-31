@@ -47,6 +47,13 @@ static bool version_supports_fabric(const std::string& version) {
     // Поддержка Fabric для year-based версий (26.1, 26.2, 26.3+)
     return version.rfind("26.", 0) == 0;
 }
+
+static bool version_supports_forge(const std::string& version) {
+    // Forge поддерживает классические версии 1.x и новые версии 26.x+.
+    if (version.size() >= 2 && version[0] == '1' && version[1] == '.') return true;
+    if (version.rfind("26.", 0) == 0) return true;
+    return false;
+}
  
 static bool nickname_char_ok(unsigned int c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -733,31 +740,47 @@ void Launcher::draw_ui() {
     ImGui::Text("%s", L.mod_loader.c_str());
 
     const bool fabric_ok = version_supports_fabric(config_.selected_version);
-    if (!fabric_ok && config_.mod_loader == ModLoader::Fabric) {
-        config_.mod_loader = ModLoader::Vanilla;
-    }
+    const bool forge_ok = version_supports_forge(config_.selected_version);
+    const bool any_loader_ok = fabric_ok || forge_ok;
 
-    if (fabric_ok) {
-        const char* loader_label = config_.mod_loader == ModLoader::Fabric ? "Fabric" :
-                                   config_.mod_loader == ModLoader::Forge ? "Forge" : "Vanilla";
+    // If the currently selected loader isn't supported for this version, fall back to Vanilla.
+    if (config_.mod_loader == ModLoader::Fabric && !fabric_ok)
+        config_.mod_loader = ModLoader::Vanilla;
+    if (config_.mod_loader == ModLoader::Forge && !forge_ok)
+        config_.mod_loader = ModLoader::Vanilla;
+
+    if (any_loader_ok) {
+        const char* loader_label = "Vanilla";
+        if (config_.mod_loader == ModLoader::Fabric) loader_label = "Fabric";
+        else if (config_.mod_loader == ModLoader::Forge) loader_label = "Forge";
+
         if (ImGui::BeginCombo("##loader_combo", loader_label)) {
+            // Vanilla is always available.
             if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla)) {
                 config_.mod_loader = ModLoader::Vanilla;
                 preferred_mod_loader_ = ModLoader::Vanilla;
                 save_settings();
             }
             if (config_.mod_loader == ModLoader::Vanilla) ImGui::SetItemDefaultFocus();
-            if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric)) {
-                config_.mod_loader = ModLoader::Fabric;
-                preferred_mod_loader_ = ModLoader::Fabric;
-                save_settings();
+
+            // Show Fabric only for versions supported by Fabric.
+            if (fabric_ok) {
+                if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric)) {
+                    config_.mod_loader = ModLoader::Fabric;
+                    preferred_mod_loader_ = ModLoader::Fabric;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
             }
-            if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
-            if (ImGui::Selectable("Forge", config_.mod_loader == ModLoader::Forge)) {
-                config_.mod_loader = ModLoader::Forge;
-                save_settings();
+
+            // Show Forge only for versions supported by Forge.
+            if (forge_ok) {
+                if (ImGui::Selectable("Forge", config_.mod_loader == ModLoader::Forge)) {
+                    config_.mod_loader = ModLoader::Forge;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::Forge) ImGui::SetItemDefaultFocus();
             }
-            if (config_.mod_loader == ModLoader::Forge) ImGui::SetItemDefaultFocus();
             ImGui::EndCombo();
         }
     } else {
@@ -910,6 +933,12 @@ void Launcher::handle_play_button() {
     if (config_.mod_loader == ModLoader::Fabric &&
         !version_supports_fabric(config_.selected_version)) {
         LOG_WARN("Fabric requested for unsupported Minecraft "
+                 << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+    if (config_.mod_loader == ModLoader::Forge &&
+        !version_supports_forge(config_.selected_version)) {
+        LOG_WARN("Forge requested for unsupported Minecraft "
                  << config_.selected_version << " — falling back to Vanilla");
         config_.mod_loader = ModLoader::Vanilla;
     }
