@@ -741,6 +741,12 @@ static bool launch_impl(const std::string& nickname_raw,
     }
 
     fs::path natives_dir = version_dir / "natives";
+    // Нативы ставит установщик в ванильную версию (mcVersion = inheritsFrom), а не в профиль Forge.
+    if (!fs::exists(natives_dir) || fs::is_empty(natives_dir)) {
+        fs::path vanilla_natives = vanilla_dir / "natives";
+        if (fs::exists(vanilla_natives) && !fs::is_empty(vanilla_natives))
+            natives_dir = vanilla_natives;
+    }
     if (!fs::exists(natives_dir)) {
         std::error_code ec;
         fs::create_directories(natives_dir, ec);
