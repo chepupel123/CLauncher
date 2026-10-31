@@ -692,12 +692,18 @@ static bool launch_impl(const std::string& nickname_raw,
         add_libraries_from(profile);
     }
 
-    fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
-    if (!fs::exists(main_jar)) {
-        LOG_ERROR("Ванильный JAR не найден: " << main_jar.string());
-        return false;
+    if (isForge) {
+        // Forge's patched client JAR is supplied by its libraries. Adding the
+        // vanilla JAR too creates duplicate Minecraft packages on the module path.
+        LOG_INFO("Skipping vanilla JAR for Forge profile (handled by client-srg.jar)");
+    } else {
+        fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
+        if (!fs::exists(main_jar)) {
+            LOG_ERROR("Ванильный JAR не найден: " << main_jar.string());
+            return false;
+        }
+        classpath_entries.push_back(main_jar.string());
     }
-    classpath_entries.push_back(main_jar.string());
 
     if (!missing_libs.empty()) {
         LOG_ERROR("Запуск прерван: " << missing_libs.size()
