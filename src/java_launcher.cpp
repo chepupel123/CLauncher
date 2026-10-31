@@ -693,9 +693,24 @@ static bool launch_impl(const std::string& nickname_raw,
     }
 
     if (isForge) {
-        // Forge's patched client JAR is supplied by its libraries. Adding the
-        // vanilla JAR too creates duplicate Minecraft packages on the module path.
-        LOG_INFO("Skipping vanilla JAR for Forge profile (handled by client-srg.jar)");
+        // Legacy Forge (1.12.2, 1.7.10) uses LaunchWrapper and patches classes
+        // from the vanilla JAR at runtime, so the vanilla JAR must be on the
+        // classpath. Modern Forge (1.17+) uses JPMS and ships its own patched
+        // client-srg.jar; adding the vanilla JAR there causes package conflicts.
+        const bool is_legacy_forge =
+            mainClass.find("launchwrapper") != std::string::npos;
+
+        if (is_legacy_forge) {
+            fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
+            if (!fs::exists(main_jar)) {
+                LOG_ERROR("Ванильный JAR не найден: " << main_jar.string());
+                return false;
+            }
+            classpath_entries.push_back(main_jar.string());
+            LOG_INFO("Adding vanilla JAR for legacy Forge (LaunchWrapper)");
+        } else {
+            LOG_INFO("Skipping vanilla JAR for modern Forge (JPMS, handled by client-srg.jar)");
+        }
     } else {
         fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
         if (!fs::exists(main_jar)) {
