@@ -778,7 +778,9 @@ static bool launch_impl(const std::string& nickname_raw,
     };
 
     auto append_profile_arguments = [&](const char* key, std::vector<std::string>& target) {
-        if (!isForge) return;
+        const bool has_legacy = profile.contains("minecraftArguments") &&
+                                profile["minecraftArguments"].is_string();
+        if (!isForge && !has_legacy) return;
 
         if (profile.contains("arguments")) {
             if (!profile["arguments"].is_object() || !profile["arguments"].contains(key)) return;
