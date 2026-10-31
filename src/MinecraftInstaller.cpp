@@ -1451,6 +1451,13 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         const std::string shared_utf8(reinterpret_cast<const char*>(shared_u8.data()), shared_u8.size());
         const std::string log_utf8(reinterpret_cast<const char*>(log_u8.data()), log_u8.size());
 
+        // Forge installer requires launcher_profiles.json to exist in the target directory.
+        const fs::path profiles_json = shared / "launcher_profiles.json";
+        if (!fs::exists(profiles_json)) {
+            std::ofstream pf(profiles_json);
+            pf << R"({"profiles":{},"settings":{"enableSnapshots":false,"enableAdvanced":false,"keepLauncherOpen":false,"showMenu":false,"showGameLog":false,"profileSorting":"ByLastUsed","crashAssistant":true}})";
+        }
+
         report_progress(30, "Installing Forge...");
         LOG_INFO("Installing Forge " << artifact_version << " into " << shared_utf8);
         const std::string command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
