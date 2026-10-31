@@ -1368,6 +1368,138 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
     }
 }
 
+std::string MinecraftInstaller::installForge(const std::string& mc_version)
+{
+    g_cancel_requested.store(false);
+    reset_speed_state();
+    g_last_error.clear();
+
+    try {
+        if (mc_version.empty()) {
+            set_install_error("Empty Minecraft version for Forge");
+            return "";
+        }
+
+        const fs::path shared = launcher_paths::shared_dir();
+        const fs::path versions_dir = launcher_paths::shared_versions_dir();
+        const std::string prefix = mc_version + "-forge-";
+
+        // Reuse an already complete Forge installation for this Minecraft version.
+        std::error_code ec;
+        if (fs::exists(versions_dir, ec)) {
+            for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
+                if (ec || !entry.is_directory()) continue;
+                const std::string id = entry.path().filename().string();
+                if (id.rfind(prefix, 0) == 0 && version_complete(entry.path()) &&
+                    fs::is_regular_file(entry.path() / (id + ".json"))) {
+                    return id;
+                }
+            }
+        }
+
+        // Forge's promotions API provides recommended and latest Maven versions.
+        const json promotions = download_json(
+            "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json");
+        const json promo_map = promotions.value("promos", json::object());
+        std::string forge_version = promo_map.value(mc_version + "-recommended", std::string());
+        if (forge_version.empty())
+            forge_version = promo_map.value(mc_version + "-latest", std::string());
+        if (forge_version.empty()) {
+            set_install_error("No Forge build found for Minecraft " + mc_version);
+            return "";
+        }
+        for (unsigned char c : forge_version) {
+            if (!(std::isdigit(c) || c == '.')) {
+                set_install_error("Invalid Forge version returned by promotions API");
+                return "";
+            }
+        }
+
+        // Forge installer needs vanilla metadata/client files available in shared/.
+        if (!install(mc_version)) {
+            if (g_last_error.empty()) set_install_error("Failed to install Vanilla " + mc_version);
+            return "";
+        }
+        if (is_cancelled()) return "";
+
+        const std::string artifact_version = mc_version + "-" + forge_version;
+        const fs::path installer_path = launcher_paths::cache_dir() /
+            ("forge-installer-" + artifact_version + ".jar");
+        const std::string installer_url =
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/" + artifact_version +
+            "/forge-" + artifact_version + "-installer.jar";
+        if (!fs::exists(installer_path) && !download(installer_url, installer_path)) {
+            if (g_last_error.empty()) set_install_error("Failed to download Forge installer");
+            return "";
+        }
+
+        JavaManager java_manager;
+        const fs::path java_path = java_manager.ensureJava(java_manager.requiredMajor(mc_version));
+        if (java_path.empty()) {
+            set_install_error("Could not resolve Java for Forge installer");
+            return "";
+        }
+
+        const fs::path log_path = launcher_paths::cache_dir() / "forge-installer.log";
+        fs::create_directories(log_path.parent_path());
+        const auto java_u8 = java_path.u8string();
+        const auto installer_u8 = installer_path.u8string();
+        const auto shared_u8 = shared.u8string();
+        const auto log_u8 = log_path.u8string();
+        const std::string java_utf8(reinterpret_cast<const char*>(java_u8.data()), java_u8.size());
+        const std::string installer_utf8(reinterpret_cast<const char*>(installer_u8.data()), installer_u8.size());
+        const std::string shared_utf8(reinterpret_cast<const char*>(shared_u8.data()), shared_u8.size());
+        const std::string log_utf8(reinterpret_cast<const char*>(log_u8.data()), log_u8.size());
+
+        report_progress(30, "Installing Forge...");
+        LOG_INFO("Installing Forge " << artifact_version << " into " << shared_utf8);
+        const std::string command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
+            "\" --installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
+        const int status = std::system(command.c_str());
+        std::ifstream log_file(log_path);
+        std::ostringstream log_contents;
+        log_contents << log_file.rdbuf();
+        const std::string output = log_contents.str();
+        if (status != 0) {
+            log_output_lines("Forge installer: ", output);
+            std::string error = pick_error_line(output);
+            if (error.empty()) error = "Forge installer failed (status " + std::to_string(status) + ")";
+            set_install_error(error);
+            return "";
+        }
+
+        const std::string expected_id = prefix + forge_version;
+        fs::path installed_dir = versions_dir / expected_id;
+        if (!fs::is_directory(installed_dir) ||
+            !fs::is_regular_file(installed_dir / (expected_id + ".json"))) {
+            // Be tolerant of installer naming differences: find its generated profile.
+            bool found = false;
+            for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
+                if (ec || !entry.is_directory()) continue;
+                const std::string id = entry.path().filename().string();
+                if (id.rfind(prefix, 0) == 0 && fs::is_regular_file(entry.path() / (id + ".json"))) {
+                    installed_dir = entry.path();
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                set_install_error("Forge installer completed but generated profile was not found");
+                return "";
+            }
+        }
+
+        mark_version_complete(installed_dir);
+        const std::string installed_id = installed_dir.filename().string();
+        report_progress(45, "Forge installed");
+        LOG_INFO("Forge installed: " << installed_id);
+        return installed_id;
+    } catch (const std::exception& e) {
+        set_install_error(std::string("Forge install error: ") + e.what());
+        return "";
+    }
+}
+
 const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
 
     {"1.19.4", "0.15.11"},
