@@ -154,6 +154,16 @@ namespace {
 
 namespace
 {
+    static bool is_version_less(const std::string& version, int target_major,
+                                int target_minor, int target_patch)
+    {
+        int major = 0, minor = 0, patch = 0;
+        std::sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch);
+        if (major != target_major) return major < target_major;
+        if (minor != target_minor) return minor < target_minor;
+        return patch < target_patch;
+    }
+
     // Маркер готовности версии: пустой файл .complete внутри версии.
     // Ставится только после полной успешной установки.
     inline bool version_complete(const fs::path& dir)
@@ -1422,12 +1432,18 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         }
         if (is_cancelled()) return "";
 
+        // Для Forge < 1.13 Maven-артефакт содержит версию MC дважды:
+        // forge-1.7.10-10.13.4.1614-1.7.10-installer.jar
+        const bool legacy_forge_artifact = is_version_less(mc_version, 1, 13, 0);
         const std::string artifact_version = mc_version + "-" + forge_version;
+        const std::string installer_suffix = legacy_forge_artifact
+            ? "-" + mc_version + "-installer.jar"
+            : "-installer.jar";
         const fs::path installer_path = launcher_paths::cache_dir() /
             ("forge-installer-" + artifact_version + ".jar");
         const std::string installer_url =
             "https://maven.minecraftforge.net/net/minecraftforge/forge/" + artifact_version +
-            "/forge-" + artifact_version + "-installer.jar";
+            "/forge-" + artifact_version + installer_suffix;
         if (!fs::exists(installer_path) && !download(installer_url, installer_path)) {
             if (g_last_error.empty()) set_install_error("Failed to download Forge installer");
             return "";
