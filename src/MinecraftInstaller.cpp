@@ -1400,10 +1400,14 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
                 if (ec || !entry.is_directory()) continue;
                 const std::string id = entry.path().filename().string();
-                if (id.rfind(prefix, 0) == 0 && version_complete(entry.path()) &&
-                    fs::is_regular_file(entry.path() / (id + ".json"))) {
-                    return id;
-                }
+                std::string id_lower = id;
+                for (auto& c : id_lower) c = static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c)));
+                if (id_lower.find("forge") == std::string::npos) continue;
+                if (id.find(mc_version) == std::string::npos) continue;
+                if (!version_complete(entry.path())) continue;
+                if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
+                return id;
             }
         }
 
@@ -1436,14 +1440,16 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         // forge-1.7.10-10.13.4.1614-1.7.10-installer.jar
         const bool legacy_forge_artifact = is_version_less(mc_version, 1, 13, 0);
         const std::string artifact_version = mc_version + "-" + forge_version;
-        const std::string installer_suffix = legacy_forge_artifact
-            ? "-" + mc_version + "-installer.jar"
-            : "-installer.jar";
         const fs::path installer_path = launcher_paths::cache_dir() /
             ("forge-installer-" + artifact_version + ".jar");
+        // Для legacy Forge папка в Maven тоже содержит суффикс MC-версии:
+        // .../forge/1.7.10-10.13.4.1614-1.7.10/forge-1.7.10-10.13.4.1614-1.7.10-installer.jar
+        const std::string maven_dir = legacy_forge_artifact
+            ? artifact_version + "-" + mc_version
+            : artifact_version;
         const std::string installer_url =
-            "https://maven.minecraftforge.net/net/minecraftforge/forge/" + artifact_version +
-            "/forge-" + artifact_version + installer_suffix;
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/" + maven_dir +
+            "/forge-" + maven_dir + "-installer.jar";
         if (!fs::exists(installer_path) && !download(installer_url, installer_path)) {
             if (g_last_error.empty()) set_install_error("Failed to download Forge installer");
             return "";
@@ -1476,8 +1482,15 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
 
         report_progress(30, "Installing Forge...");
         LOG_INFO("Installing Forge " << artifact_version << " into " << shared_utf8);
-        const std::string command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
-            "\" --installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
+        // Legacy Forge (< 1.13) не принимает путь к директории — устанавливает в ~/.minecraft.
+        std::string command;
+        if (legacy_forge_artifact) {
+            command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
+                "\" --installClient > \"" + log_utf8 + "\" 2>&1";
+        } else {
+            command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
+                "\" --installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
+        }
         const int status = std::system(command.c_str());
         std::ifstream log_file(log_path);
         std::ostringstream log_contents;
@@ -1500,10 +1513,62 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
                 if (ec || !entry.is_directory()) continue;
                 const std::string id = entry.path().filename().string();
-                if (id.rfind(prefix, 0) == 0 && fs::is_regular_file(entry.path() / (id + ".json"))) {
-                    installed_dir = entry.path();
-                    found = true;
-                    break;
+                std::string id_lower = id;
+                for (auto& c : id_lower) c = static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c)));
+                if (id_lower.find("forge") == std::string::npos) continue;
+                if (id.find(mc_version) == std::string::npos) continue;
+                if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
+                try {
+                    json p;
+                    std::ifstream pf(entry.path() / (id + ".json"));
+                    pf >> p;
+                    if (p.value("inheritsFrom", std::string()) != mc_version) continue;
+                } catch (...) { continue; }
+                installed_dir = entry.path();
+                found = true;
+                break;
+            }
+            if (!found) {
+                // Legacy Forge installs its profile into ~/.minecraft/versions/ — search there.
+                fs::path home_versions;
+#ifdef _WIN32
+                if (const char* appdata = std::getenv("APPDATA"))
+                    home_versions = fs::path(appdata) / ".minecraft" / "versions";
+#else
+                if (const char* home = std::getenv("HOME"))
+                    home_versions = fs::path(home) / ".minecraft" / "versions";
+#endif
+                if (!home_versions.empty() && fs::exists(home_versions, ec)) {
+                    for (const auto& entry : fs::directory_iterator(home_versions, ec)) {
+                        if (ec || !entry.is_directory()) continue;
+                        const std::string id = entry.path().filename().string();
+                        std::string id_lower = id;
+                        for (auto& c : id_lower) c = static_cast<char>(
+                            std::tolower(static_cast<unsigned char>(c)));
+                        if (id_lower.find("forge") == std::string::npos) continue;
+                        if (id.find(mc_version) == std::string::npos) continue;
+                        if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
+                        try {
+                            json p;
+                            std::ifstream pf(entry.path() / (id + ".json"));
+                            pf >> p;
+                            if (p.value("inheritsFrom", std::string()) != mc_version) continue;
+                        } catch (...) { continue; }
+                        // Copy the profile from ~/.minecraft/versions/ into shared/versions/.
+                        fs::path dest = versions_dir / id;
+                        std::error_code copy_ec;
+                        fs::create_directories(dest, copy_ec);
+                        fs::copy(entry.path(), dest,
+                                 fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+                                 copy_ec);
+                        if (!copy_ec) {
+                            installed_dir = dest;
+                            found = true;
+                            LOG_INFO("Copied legacy Forge profile from ~/.minecraft: " << id);
+                        }
+                        break;
+                    }
                 }
             }
             if (!found) {
