@@ -1504,18 +1504,18 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                 const std::string maven_path =
                     group_path + "/" + artifact + "/" + version + "/" + jar_name;
 
-                // Насильно форсируем правильные и живые сервера для капризных библиотек старого Forge
+                // Насильный, жесткий маппинг серверов для капризного старья 1.7.10
                 std::string base;
                 if (name.find("launchwrapper") != std::string::npos || name.find("lzma") != std::string::npos) {
-                    base = "https://libraries.minecraft.net/";
+                    base = "https://minecraft.net";
+                } else if (name.find("asm") != std::string::npos || name.find("guava") != std::string::npos || name.find("commons-lang") != std::string::npos) {
+                    base = "https://minecraft.net"; // Mojang тоже зеркалит эти либы у себя!
                 } else {
-                    base = lib.value("url", std::string());
-                    if (base.empty() || base.find("minecraft.net") != std::string::npos) {
-                        base = "https://minecraftforge.net";
-                    }
+                    base = "https://maven.minecraftforge.net/";
                 }
                 
                 if (!base.empty() && base.back() != '/') base += '/';
+
 
 
                 if (!lib.contains("downloads") || !lib["downloads"].is_object())
