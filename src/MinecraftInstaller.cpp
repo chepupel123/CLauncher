@@ -1482,14 +1482,13 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
 
         report_progress(30, "Installing Forge...");
         LOG_INFO("Installing Forge " << artifact_version << " into " << shared_utf8);
-        // Legacy Forge (< 1.13) не принимает путь к директории — устанавливает в ~/.minecraft.
         std::string command;
         if (legacy_forge_artifact) {
             command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
-                "\" --installClient > \"" + log_utf8 + "\" 2>&1";
+                      "\" -installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
         } else {
             command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
-                "\" --installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
+                      "\" --installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
         }
         const int status = std::system(command.c_str());
         std::ifstream log_file(log_path);
