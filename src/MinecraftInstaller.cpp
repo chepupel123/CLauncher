@@ -37,7 +37,7 @@
 #endif
 
 namespace fs = std::filesystem;
-static std::string g_stage_label;  // текущий этап загрузки — для логов
+static std::string g_stage_label;
 using json = nlohmann::json;
 
 namespace MinecraftInstaller {
@@ -81,7 +81,6 @@ namespace {
         if (!g_progress_fn) return;
         if (pct < 0) pct = 0;
         if (pct > 100) pct = 100;
-        // bytes_total == 0: это не байты, а старый процент 0..100 в bytes_done.
         g_progress_fn(static_cast<size_t>(pct), 0, stage, g_progress_user);
     }
 
@@ -97,16 +96,12 @@ namespace {
         MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
     }
 
-    // Средняя скорость с начала этапа: (bytes_done - start) / elapsed.
-    // Первые 3 с не публикуем. ETA скрыт при скорости < 0.02 МБ/с или > 24 ч.
     void update_speed_eta(size_t bytes_done, size_t bytes_total) {
         if (bytes_total == 0) return;
         if (bytes_done > bytes_total) bytes_done = bytes_total;
 
         bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
 
-        // Идёт проверка SHA1: байты не приходят и «скорость» упала бы.
-        // Не трогаем последние известные скорость и ETA — UI сам покажет «checking...».
         if (hashing) {
             MinecraftInstaller::g_download_checking.store(true, std::memory_order_relaxed);
             return;
@@ -129,15 +124,11 @@ namespace {
 
         size_t remaining = bytes_total - bytes_done;
 
-        // Почти всё скачано (< 1 МБ): не гасим ETA в самом конце,
-        // показываем минимальное время (1 сек — меньшего UI не показывает).
         if (remaining < 1024 * 1024) {
             MinecraftInstaller::g_download_eta_seconds.store(1, std::memory_order_relaxed);
             return;
         }
 
-        // Скорость ниже 20 КБ/с: ETA не считаем, но саму скорость не
-        // скрываем — она остаётся в UI (пусть даже 0.01 МБ/с).
         if (speed_mbps < kMinEtaSpeedMbps) {
             MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
             return;
@@ -164,8 +155,6 @@ namespace
         return patch < target_patch;
     }
 
-    // Маркер готовности версии: пустой файл .complete внутри версии.
-    // Ставится только после полной успешной установки.
     inline bool version_complete(const fs::path& dir)
     {
         std::error_code ec;
@@ -183,15 +172,12 @@ namespace
         std::call_once(curl_global_once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
     }
 
-    // Применяем единую TLS-конфигурацию (NATIVE_CA / cacert.pem / системные CA)
-    // к каждому curl-хэндлу. Проверка сертификатов НЕ отключается.
     bool apply_tls(CURL* curl)
     {
         ensure_curl_global();
         return curl_tls::apply(curl);
     }
 
-    // Логируем сетевые ошибки в clauncher.log (уровень ERROR).
     std::string log_curl_failure(const std::string& url, CURLcode rc, int attempt = 0)
     {
         std::ostringstream ss;
@@ -216,8 +202,6 @@ namespace
         return nbytes;
     }
 
-    // Кроссплатформенное открытие файла на запись: на Windows path::value_type
-    // это wchar_t, поэтому fopen(path.c_str()) не скомпилируется — нужен _wfopen.
     static FILE* open_write_binary(const fs::path& path)
     {
 #ifdef _WIN32
@@ -497,10 +481,8 @@ namespace
         if (todo.empty()) return true;
 
         const size_t total = todo.size();
-        // Умное скачивание: в 4 раза больше потоков, чем ядер (сети нравится
-        // параллелизм), но не больше разумного числа на количество файлов.
         unsigned hw = std::thread::hardware_concurrency();
-        if (hw == 0) hw = 4;  // hardware_concurrency() может вернуть 0
+        if (hw == 0) hw = 4;
         unsigned by_cpu = hw * 4;
         unsigned by_files = 16;
         if (total <= 10) by_files = 4;
@@ -852,8 +834,6 @@ namespace
             const std::string natives_path_utf8(
                 reinterpret_cast<const char*>(natives_dir_u8.data()), natives_dir_u8.size());
 #ifdef _WIN32
-            // bsdtar (встроен в Windows 10/11) умеет распаковывать zip/jar,
-            // в отличие от Expand-Archive, который требует расширение .zip.
             std::string cmd = "tar -xf \"" + jar_path_utf8 +
                               "\" -C \"" + natives_path_utf8 + "\"";
 #else
@@ -1354,7 +1334,6 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         }
 
         fs::path installed_fabric_dir = minecraft_dir / "versions" / found_folder;
-        // Неполная папка от прошлой попытки мешает rename — убираем её.
         std::error_code pre_ec;
         fs::remove_all(installed_fabric_dir, pre_ec);
         std::error_code replace_ec;
@@ -1392,7 +1371,6 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
 
         const fs::path versions_dir = launcher_paths::shared_versions_dir();
 
-        // Reuse an already complete Forge installation for this Minecraft version.
         std::error_code ec;
         if (fs::exists(versions_dir, ec)) {
             for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
@@ -1409,12 +1387,11 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             }
         }
 
-        // Официальный meta-сервер Prism Launcher.
         const json prism_index = download_json(
             "https://meta.prismlauncher.org/v1/net.minecraftforge/index.json");
 
         std::string forge_version;
-        std::string raw_prism_version; // Хранит полный идентификатор Prism для сетевого запроса
+        std::string raw_prism_version;
 
         if (prism_index.contains("versions") && prism_index["versions"].is_array()) {
             for (const auto& v : prism_index["versions"]) {
@@ -1424,10 +1401,8 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                 bool match = false;
                 for (const auto& req : v["requires"]) {
                     if (!req.is_object()) continue;
-
                     std::string uid = req.value("uid", "");
                     std::string equals_val = req.value("equals", "");
-
                     if ((uid == "net.minecraft" && equals_val == mc_version) ||
                         (uid == "net.minecraft" && mc_version.find(equals_val) != std::string::npos)) {
                         match = true;
@@ -1437,14 +1412,11 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
 
                 if (match) {
                     raw_prism_version = v["version"].get<std::string>();
-
-                    // ИСПРАВЛЕНО: Правильно выделяем forge_version для expected_id
                     size_t dash_pos = raw_prism_version.find('-');
-                    if (dash_pos != std::string::npos) {
+                    if (dash_pos != std::string::npos)
                         forge_version = raw_prism_version.substr(dash_pos + 1);
-                    } else {
+                    else
                         forge_version = raw_prism_version;
-                    }
                     break;
                 }
             }
@@ -1471,34 +1443,81 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             return "";
         }
 
-        // ИСПРАВЛЕНО: Запрос манифеста идет строго по raw_prism_version (с префиксом игры, если он был)
         json forge_metadata = download_json(
             "https://meta.prismlauncher.org/v1/net.minecraftforge/" + raw_prism_version + ".json");
 
-        // Если это старая версия Forge, принудительно корректируем classifier библиотек в памяти
-        if (is_version_less(mc_version, 1, 13, 0) && forge_metadata.contains("libraries") && forge_metadata["libraries"].is_array()) {
+        if (is_version_less(mc_version, 1, 13, 0)
+            && forge_metadata.contains("libraries")
+            && forge_metadata["libraries"].is_array()) {
+
             for (auto& lib : forge_metadata["libraries"]) {
-                if (lib.contains("name") && lib["name"].is_string()) {
-                    std::string name = lib["name"].get<std::string>();
-                    if (name.find("net.minecraftforge:forge:") != std::string::npos && name.find(":universal") == std::string::npos) {
-                        lib["name"] = name + ":universal";
-                        if (lib.contains("downloads") && lib["downloads"].contains("artifact")) {
-                            auto& art = lib["downloads"]["artifact"];
-                            std::string path = art.value("path", "");
-                            std::string url = art.value("url", "");
-                            if (!path.empty() && path.find("-universal.jar") == std::string::npos) {
-                                art["path"] = path.substr(0, path.size() - 4) + "-universal.jar";
-                            }
-                            if (!url.empty() && url.find("-universal.jar") == std::string::npos) {
-                                art["url"] = url.substr(0, url.size() - 4) + "-universal.jar";
-                            }
-                        }
-                    }
+                if (!lib.contains("name") || !lib["name"].is_string()) continue;
+                std::string name = lib["name"].get<std::string>();
+
+                if (name.find("net.minecraftforge:forge:") != std::string::npos
+                    && name.find(":universal") == std::string::npos) {
+                    name += ":universal";
+                    lib["name"] = name;
                 }
+
+                const bool is_forge_universal =
+                    name.find("net.minecraftforge:forge:") != std::string::npos
+                    && name.find(":universal") != std::string::npos;
+
+                const bool has_artifact =
+                    lib.contains("downloads") && lib["downloads"].is_object()
+                    && lib["downloads"].contains("artifact")
+                    && lib["downloads"]["artifact"].is_object();
+
+                if (has_artifact) {
+                    if (is_forge_universal) {
+                        auto& art = lib["downloads"]["artifact"];
+                        std::string path = art.value("path", "");
+                        std::string url  = art.value("url", "");
+                        if (!path.empty() && path.find("-universal.jar") == std::string::npos)
+                            art["path"] = path.substr(0, path.size() - 4) + "-universal.jar";
+                        if (!url.empty() && url.find("-universal.jar") == std::string::npos)
+                            art["url"]  = url.substr(0, url.size() - 4)  + "-universal.jar";
+                    }
+                    continue;
+                }
+
+                std::vector<std::string> parts;
+                size_t start = 0, end = 0;
+                while ((end = name.find(':', start)) != std::string::npos) {
+                    parts.push_back(name.substr(start, end - start));
+                    start = end + 1;
+                }
+                parts.push_back(name.substr(start));
+                if (parts.size() < 3 || parts[0].empty() || parts[1].empty() || parts[2].empty())
+                    continue;
+
+                std::string group_path = parts[0];
+                std::replace(group_path.begin(), group_path.end(), '.', '/');
+                const std::string artifact   = parts[1];
+                const std::string version    = parts[2];
+                const std::string classifier = (parts.size() > 3) ? parts[3] : "";
+
+                const std::string jar_name =
+                    artifact + "-" + version +
+                    (classifier.empty() ? "" : "-" + classifier) + ".jar";
+                const std::string maven_path =
+                    group_path + "/" + artifact + "/" + version + "/" + jar_name;
+
+                std::string base = lib.value("url", std::string());
+                if (base.empty()) base = "https://maven.minecraftforge.net/";
+                if (!base.empty() && base.back() != '/') base += '/';
+
+                if (!lib.contains("downloads") || !lib["downloads"].is_object())
+                    lib["downloads"] = json::object();
+
+                json artifact_obj;
+                artifact_obj["path"] = maven_path;
+                artifact_obj["url"]  = base + maven_path;
+                lib["downloads"]["artifact"] = artifact_obj;
             }
         }
 
-        // Для legacy Forge (1.7.10 / 1.12.2) Prism не прописывает mainClass. Добавляем его принудительно.
         if (!forge_metadata.contains("mainClass")) {
             forge_metadata["mainClass"] = "net.minecraft.launchwrapper.Launch";
         }
@@ -1516,7 +1535,6 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         report_progress(30, "Installing Forge...");
         LOG_INFO("Installing Forge " << forge_version << " for Minecraft " << mc_version);
 
-        // ensure_libraries скачает universal.jar и все зависимости по URL из профиля Prism.
         if (!ensure_libraries(installed_dir, forge_metadata, 30, 45)) {
             if (g_last_error.empty())
                 set_install_error("Failed to download Forge libraries");
@@ -1540,7 +1558,6 @@ const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILI
     {"1.20.4", "0.16.5"},
     {"1.20.6", "0.16.14"},
     {"1.21.1", "0.16.14"},
-    // Current stable loader fallback values for year-based releases.
     {"26.1", "0.20.1"},
     {"26.2", "0.20.1"},
     {"26.3", "0.20.1"},
@@ -1566,7 +1583,6 @@ std::string FabricVersionMap::getLoaderForVersion(const std::string& mc_version)
 
 std::string FabricVersionMap::getClosestVersion(const std::string& mc_version)
 {
-    // The API can be temporarily unavailable; use a recent stable loader for 26.x.
     if (mc_version.rfind("26.", 0) == 0) return "0.20.1";
 
     size_t p1 = mc_version.find('.');
