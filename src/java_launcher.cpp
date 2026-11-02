@@ -578,9 +578,14 @@ static bool launch_impl(const std::string& nickname_raw,
                     if (profile.contains("inheritsFrom")) {
                         mcVersion = profile["inheritsFrom"].get<std::string>();
                     } else {
-                        size_t lastDash = version.rfind('-');
-                        if (lastDash != std::string::npos) {
-                            mcVersion = version.substr(lastDash + 1);
+                        size_t forgePos = version.find("-forge-");
+                        if (forgePos != std::string::npos) {
+                            mcVersion = version.substr(0, forgePos);
+                        } else {
+                            size_t lastDash = version.rfind('-');
+                            if (lastDash != std::string::npos) {
+                                mcVersion = version.substr(lastDash + 1);
+                            }
                         }
                     }
                 }
@@ -654,6 +659,20 @@ static bool launch_impl(const std::string& nickname_raw,
             }
 
             std::string lib_name = lib["name"].get<std::string>();
+
+            // Patch duplicated version for legacy Forge (Prism): "1.7.10-10.13.4.1614-1.7.10" -> "1.7.10-10.13.4.1614"
+            if (lib_name.find("net.minecraftforge:forge:") != std::string::npos) {
+                size_t first_colon = lib_name.find(':');
+                size_t second_colon = lib_name.find(':', first_colon + 1);
+                if (first_colon != std::string::npos && second_colon != std::string::npos) {
+                    std::string ver_part = lib_name.substr(second_colon + 1);
+                    size_t second_dash = ver_part.find('-', ver_part.find('-') + 1);
+                    if (second_dash != std::string::npos && ver_part.find(":universal") != std::string::npos) {
+                        lib_name = "net.minecraftforge:forge:" + ver_part.substr(0, second_dash) + ":universal";
+                    }
+                }
+            }
+
             std::string group_path, artifact, lib_version, classifier;
             if (!parse_maven_name(lib_name, group_path, artifact, lib_version, classifier)) continue;
 
