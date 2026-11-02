@@ -1390,9 +1390,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             return "";
         }
 
-        const fs::path shared = launcher_paths::shared_dir();
         const fs::path versions_dir = launcher_paths::shared_versions_dir();
-        const std::string prefix = mc_version + "-forge-";
 
         // Reuse an already complete Forge installation for this Minecraft version.
         std::error_code ec;
@@ -1411,176 +1409,124 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             }
         }
 
-        // Forge's promotions API provides recommended and latest Maven versions.
-        const json promotions = download_json(
-            "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json");
-        const json promo_map = promotions.value("promos", json::object());
-        std::string forge_version = promo_map.value(mc_version + "-recommended", std::string());
-        if (forge_version.empty())
-            forge_version = promo_map.value(mc_version + "-latest", std::string());
+        // Официальный meta-сервер Prism Launcher.
+        const json prism_index = download_json(
+            "https://meta.prismlauncher.org/v1/net.minecraftforge/index.json");
+
+        std::string forge_version;
+        std::string raw_prism_version; // Хранит полный идентификатор Prism для сетевого запроса
+
+        if (prism_index.contains("versions") && prism_index["versions"].is_array()) {
+            for (const auto& v : prism_index["versions"]) {
+                if (!v.contains("requires") || !v["requires"].is_array()) continue;
+                if (!v.contains("version") || !v["version"].is_string()) continue;
+
+                bool match = false;
+                for (const auto& req : v["requires"]) {
+                    if (!req.is_object()) continue;
+
+                    std::string uid = req.value("uid", "");
+                    std::string equals_val = req.value("equals", "");
+
+                    if ((uid == "net.minecraft" && equals_val == mc_version) ||
+                        (uid == "net.minecraft" && mc_version.find(equals_val) != std::string::npos)) {
+                        match = true;
+                        break;
+                    }
+                }
+
+                if (match) {
+                    raw_prism_version = v["version"].get<std::string>();
+
+                    // ИСПРАВЛЕНО: Правильно выделяем forge_version для expected_id
+                    size_t dash_pos = raw_prism_version.find('-');
+                    if (dash_pos != std::string::npos) {
+                        forge_version = raw_prism_version.substr(dash_pos + 1);
+                    } else {
+                        forge_version = raw_prism_version;
+                    }
+                    break;
+                }
+            }
+        }
+
         if (forge_version.empty()) {
             set_install_error("No Forge build found for Minecraft " + mc_version);
             return "";
         }
-        for (unsigned char c : forge_version) {
-            if (!(std::isdigit(c) || c == '.')) {
-                set_install_error("Invalid Forge version returned by promotions API");
-                return "";
-            }
-        }
 
-        // Forge installer needs vanilla metadata/client files available in shared/.
         if (!install(mc_version)) {
-            if (g_last_error.empty()) set_install_error("Failed to install Vanilla " + mc_version);
+            if (g_last_error.empty())
+                set_install_error("Failed to install Vanilla " + mc_version);
             return "";
         }
         if (is_cancelled()) return "";
 
-        // Для Forge < 1.13 Maven-артефакт содержит версию MC дважды:
-        // forge-1.7.10-10.13.4.1614-1.7.10-installer.jar
-        const bool legacy_forge_artifact = is_version_less(mc_version, 1, 13, 0);
-        const std::string artifact_version = mc_version + "-" + forge_version;
-        const fs::path installer_path = launcher_paths::cache_dir() /
-            ("forge-installer-" + artifact_version + ".jar");
-        // Для legacy Forge папка в Maven тоже содержит суффикс MC-версии:
-        // .../forge/1.7.10-10.13.4.1614-1.7.10/forge-1.7.10-10.13.4.1614-1.7.10-installer.jar
-        const std::string maven_dir = legacy_forge_artifact
-            ? artifact_version + "-" + mc_version
-            : artifact_version;
-        const std::string installer_url =
-            "https://maven.minecraftforge.net/net/minecraftforge/forge/" + maven_dir +
-            "/forge-" + maven_dir + "-installer.jar";
-        if (!fs::exists(installer_path) && !download(installer_url, installer_path)) {
-            if (g_last_error.empty()) set_install_error("Failed to download Forge installer");
+        const std::string expected_id = mc_version + "-forge-" + forge_version;
+        const fs::path installed_dir = versions_dir / expected_id;
+        std::error_code mk_ec;
+        fs::create_directories(installed_dir, mk_ec);
+        if (mk_ec) {
+            set_install_error("Failed to create Forge directory: " + mk_ec.message());
             return "";
         }
 
-        JavaManager java_manager;
-        const fs::path java_path = java_manager.ensureJava(java_manager.requiredMajor(mc_version));
-        if (java_path.empty()) {
-            set_install_error("Could not resolve Java for Forge installer");
-            return "";
-        }
+        // ИСПРАВЛЕНО: Запрос манифеста идет строго по raw_prism_version (с префиксом игры, если он был)
+        json forge_metadata = download_json(
+            "https://meta.prismlauncher.org/v1/net.minecraftforge/" + raw_prism_version + ".json");
 
-        const fs::path log_path = launcher_paths::cache_dir() / "forge-installer.log";
-        fs::create_directories(log_path.parent_path());
-        const auto java_u8 = java_path.u8string();
-        const auto installer_u8 = installer_path.u8string();
-        const auto shared_u8 = shared.u8string();
-        const auto log_u8 = log_path.u8string();
-        const std::string java_utf8(reinterpret_cast<const char*>(java_u8.data()), java_u8.size());
-        const std::string installer_utf8(reinterpret_cast<const char*>(installer_u8.data()), installer_u8.size());
-        const std::string shared_utf8(reinterpret_cast<const char*>(shared_u8.data()), shared_u8.size());
-        const std::string log_utf8(reinterpret_cast<const char*>(log_u8.data()), log_u8.size());
-
-        // Forge installer requires launcher_profiles.json to exist in the target directory.
-        const fs::path profiles_json = shared / "launcher_profiles.json";
-        if (!fs::exists(profiles_json)) {
-            std::ofstream pf(profiles_json);
-            pf << R"({"profiles":{},"settings":{"enableSnapshots":false,"enableAdvanced":false,"keepLauncherOpen":false,"showMenu":false,"showGameLog":false,"profileSorting":"ByLastUsed","crashAssistant":true}})";
-        }
-
-        report_progress(30, "Installing Forge...");
-        LOG_INFO("Installing Forge " << artifact_version << " into " << shared_utf8);
-        std::string command;
-        if (legacy_forge_artifact) {
-            command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
-                      "\" -installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
-        } else {
-            command = "\"" + java_utf8 + "\" -jar \"" + installer_utf8 +
-                      "\" --installClient \"" + shared_utf8 + "\" > \"" + log_utf8 + "\" 2>&1";
-        }
-        const int status = std::system(command.c_str());
-        std::ifstream log_file(log_path);
-        std::ostringstream log_contents;
-        log_contents << log_file.rdbuf();
-        const std::string output = log_contents.str();
-        if (status != 0) {
-            log_output_lines("Forge installer: ", output);
-            std::string error = pick_error_line(output);
-            if (error.empty()) error = "Forge installer failed (status " + std::to_string(status) + ")";
-            set_install_error(error);
-            return "";
-        }
-
-        const std::string expected_id = prefix + forge_version;
-        fs::path installed_dir = versions_dir / expected_id;
-        if (!fs::is_directory(installed_dir) ||
-            !fs::is_regular_file(installed_dir / (expected_id + ".json"))) {
-            // Be tolerant of installer naming differences: find its generated profile.
-            bool found = false;
-            for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
-                if (ec || !entry.is_directory()) continue;
-                const std::string id = entry.path().filename().string();
-                std::string id_lower = id;
-                for (auto& c : id_lower) c = static_cast<char>(
-                    std::tolower(static_cast<unsigned char>(c)));
-                if (id_lower.find("forge") == std::string::npos) continue;
-                if (id.find(mc_version) == std::string::npos) continue;
-                if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
-                try {
-                    json p;
-                    std::ifstream pf(entry.path() / (id + ".json"));
-                    pf >> p;
-                    if (p.value("inheritsFrom", std::string()) != mc_version) continue;
-                } catch (...) { continue; }
-                installed_dir = entry.path();
-                found = true;
-                break;
-            }
-            if (!found) {
-                // Legacy Forge installs its profile into ~/.minecraft/versions/ — search there.
-                fs::path home_versions;
-#ifdef _WIN32
-                if (const char* appdata = std::getenv("APPDATA"))
-                    home_versions = fs::path(appdata) / ".minecraft" / "versions";
-#else
-                if (const char* home = std::getenv("HOME"))
-                    home_versions = fs::path(home) / ".minecraft" / "versions";
-#endif
-                if (!home_versions.empty() && fs::exists(home_versions, ec)) {
-                    for (const auto& entry : fs::directory_iterator(home_versions, ec)) {
-                        if (ec || !entry.is_directory()) continue;
-                        const std::string id = entry.path().filename().string();
-                        std::string id_lower = id;
-                        for (auto& c : id_lower) c = static_cast<char>(
-                            std::tolower(static_cast<unsigned char>(c)));
-                        if (id_lower.find("forge") == std::string::npos) continue;
-                        if (id.find(mc_version) == std::string::npos) continue;
-                        if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
-                        try {
-                            json p;
-                            std::ifstream pf(entry.path() / (id + ".json"));
-                            pf >> p;
-                            if (p.value("inheritsFrom", std::string()) != mc_version) continue;
-                        } catch (...) { continue; }
-                        // Copy the profile from ~/.minecraft/versions/ into shared/versions/.
-                        fs::path dest = versions_dir / id;
-                        std::error_code copy_ec;
-                        fs::create_directories(dest, copy_ec);
-                        fs::copy(entry.path(), dest,
-                                 fs::copy_options::recursive | fs::copy_options::overwrite_existing,
-                                 copy_ec);
-                        if (!copy_ec) {
-                            installed_dir = dest;
-                            found = true;
-                            LOG_INFO("Copied legacy Forge profile from ~/.minecraft: " << id);
+        // Если это старая версия Forge, принудительно корректируем classifier библиотек в памяти
+        if (is_version_less(mc_version, 1, 13, 0) && forge_metadata.contains("libraries") && forge_metadata["libraries"].is_array()) {
+            for (auto& lib : forge_metadata["libraries"]) {
+                if (lib.contains("name") && lib["name"].is_string()) {
+                    std::string name = lib["name"].get<std::string>();
+                    if (name.find("net.minecraftforge:forge:") != std::string::npos && name.find(":universal") == std::string::npos) {
+                        lib["name"] = name + ":universal";
+                        if (lib.contains("downloads") && lib["downloads"].contains("artifact")) {
+                            auto& art = lib["downloads"]["artifact"];
+                            std::string path = art.value("path", "");
+                            std::string url = art.value("url", "");
+                            if (!path.empty() && path.find("-universal.jar") == std::string::npos) {
+                                art["path"] = path.substr(0, path.size() - 4) + "-universal.jar";
+                            }
+                            if (!url.empty() && url.find("-universal.jar") == std::string::npos) {
+                                art["url"] = url.substr(0, url.size() - 4) + "-universal.jar";
+                            }
                         }
-                        break;
                     }
                 }
             }
-            if (!found) {
-                set_install_error("Forge installer completed but generated profile was not found");
+        }
+
+        // Для legacy Forge (1.7.10 / 1.12.2) Prism не прописывает mainClass. Добавляем его принудительно.
+        if (!forge_metadata.contains("mainClass")) {
+            forge_metadata["mainClass"] = "net.minecraft.launchwrapper.Launch";
+        }
+
+        const fs::path profile_json = installed_dir / (expected_id + ".json");
+        {
+            std::ofstream out(profile_json);
+            if (!out) {
+                set_install_error("Failed to write Forge profile JSON: " + profile_json.string());
                 return "";
             }
+            out << forge_metadata.dump(2);
+        }
+
+        report_progress(30, "Installing Forge...");
+        LOG_INFO("Installing Forge " << forge_version << " for Minecraft " << mc_version);
+
+        // ensure_libraries скачает universal.jar и все зависимости по URL из профиля Prism.
+        if (!ensure_libraries(installed_dir, forge_metadata, 30, 45)) {
+            if (g_last_error.empty())
+                set_install_error("Failed to download Forge libraries");
+            return "";
         }
 
         mark_version_complete(installed_dir);
-        const std::string installed_id = installed_dir.filename().string();
         report_progress(45, "Forge installed");
-        LOG_INFO("Forge installed: " << installed_id);
-        return installed_id;
+        LOG_INFO("Forge installed: " << expected_id);
+        return expected_id;
     } catch (const std::exception& e) {
         set_install_error(std::string("Forge install error: ") + e.what());
         return "";
