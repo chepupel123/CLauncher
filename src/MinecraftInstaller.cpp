@@ -1579,7 +1579,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         return "";
     }
 }
-}const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
+const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
 
     {"1.19.4", "0.15.11"},
     {"1.20.1", "0.15.11"},
