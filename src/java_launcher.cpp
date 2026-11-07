@@ -885,7 +885,7 @@ static bool launch_impl(const std::string& nickname_raw,
         }
     }
 
-    std::vector<std::string> game_args;
+        std::vector<std::string> game_args;
     const bool has_legacy_args = profile.contains("minecraftArguments") &&
                                  profile["minecraftArguments"].is_string();
 
@@ -907,6 +907,24 @@ static bool launch_impl(const std::string& nickname_raw,
         game_args.push_back("--fullScreen");
     }
     append_profile_arguments("game", game_args);
+
+    // Legacy Forge (< 1.13): LaunchWrapper требует --tweakClass FMLTweaker.
+    // Без него LaunchWrapper подставляет VanillaTweaker и падает с
+    // ClassNotFoundException: net.minecraft.client.Minecraft на обфусцированном jar.
+    if (isForge && is_version_less(mcVersion, 1, 13, 0)) {
+        bool has_tweak = false;
+        for (size_t i = 0; i < game_args.size(); ++i) {
+            if (game_args[i] == "--tweakClass") { has_tweak = true; break; }
+        }
+        if (!has_tweak) {
+            const std::string tweaker = is_version_less(mcVersion, 1, 8, 0)
+                ? "cpw.mods.fml.common.launcher.FMLTweaker"
+                : "net.minecraftforge.fml.common.launcher.FMLTweaker";
+            game_args.push_back("--tweakClass");
+            game_args.push_back(tweaker);
+            LOG_INFO("Legacy Forge: added --tweakClass " << tweaker);
+        }
+    }
 
     std::vector<std::string> exec_args;
     fs::path argfile = argfile_dir / "java-args.argfile";
