@@ -1589,7 +1589,8 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         set_install_error(std::string("Forge install error: ") + e.what());
         return "";
     }
-}const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
+}
+const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
 
     {"1.19.4", "0.15.11"},
     {"1.20.1", "0.15.11"},
