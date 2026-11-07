@@ -1446,6 +1446,13 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             && forge_metadata.contains("libraries")
             && forge_metadata["libraries"].is_array()) {
 
+            auto force_universal_suffix = [](std::string& s) {
+                if (s.size() < 4) return;
+                if (s.compare(s.size() - 4, 4, ".jar") != 0) return;
+                if (s.find("-universal.jar") != std::string::npos) return;
+                s = s.substr(0, s.size() - 4) + "-universal.jar";
+            };
+
             for (auto& lib : forge_metadata["libraries"]) {
                 if (!lib.contains("name") || !lib["name"].is_string()) continue;
                 std::string name = lib["name"].get<std::string>();
@@ -1465,35 +1472,39 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                     && lib["downloads"].contains("artifact")
                     && lib["downloads"]["artifact"].is_object();
 
-                // forge-universal с готовым Prism-путём — путь авторитетнее name.
-                // Java_launcher строит путь из name, поэтому переписываем name под path,
-                // иначе файл окажется не там, где его ищет лаунчер.
                 if (is_forge_universal && has_artifact) {
                     auto& art = lib["downloads"]["artifact"];
                     std::string art_path = art.value("path", "");
-                    if (!art_path.empty()) {
-                        size_t forge_pos = art_path.find("/forge/");
-                        if (forge_pos != std::string::npos) {
-                            size_t ver_start = forge_pos + 7;
-                            size_t ver_end = art_path.find('/', ver_start);
-                            if (ver_end != std::string::npos) {
-                                std::string prism_version =
-                                    art_path.substr(ver_start, ver_end - ver_start);
-                                lib["name"] = "net.minecraftforge:forge:" +
-                                              prism_version + ":universal";
-                            }
-                        }
-                        std::string url = art.value("url", "");
-                        if (url.rfind("https://minecraft.net", 0) == 0
-                            || url.rfind("http://minecraft.net", 0) == 0
-                            || url.empty()) {
-                            art["url"] = "https://maven.minecraftforge.net/" + art_path;
-                        }
+                    std::string art_url  = art.value("url", "");
+
+                    std::string prism_version;
+                    size_t forge_pos = art_path.find("/forge/");
+                    if (forge_pos != std::string::npos) {
+                        size_t ver_start = forge_pos + 7;
+                        size_t ver_end = art_path.find('/', ver_start);
+                        if (ver_end != std::string::npos)
+                            prism_version = art_path.substr(ver_start, ver_end - ver_start);
                     }
+                    if (!prism_version.empty())
+                        lib["name"] = "net.minecraftforge:forge:" + prism_version + ":universal";
+
+                    force_universal_suffix(art_path);
+
+                    if (art_url.empty()
+                        || art_url.rfind("https://minecraft.net", 0) == 0
+                        || art_url.rfind("http://minecraft.net", 0) == 0) {
+                        art_url = "https://maven.minecraftforge.net/" + art_path;
+                    } else {
+                        force_universal_suffix(art_url);
+                    }
+
+                    art["path"] = art_path;
+                    art["url"]  = art_url;
+                    art["sha1"] = "";
+
                     continue;
                 }
 
-                // Прочие либы с готовым artifact (включая обычные ванильные) — не трогаем.
                 if (has_artifact) continue;
 
                 std::vector<std::string> parts;
@@ -1578,8 +1589,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         set_install_error(std::string("Forge install error: ") + e.what());
         return "";
     }
-}
-const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
+}const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
 
     {"1.19.4", "0.15.11"},
     {"1.20.1", "0.15.11"},
