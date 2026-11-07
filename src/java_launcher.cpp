@@ -631,17 +631,48 @@ static bool launch_impl(const std::string& nickname_raw,
     fs::path vanilla_dir = versions_dir / mcVersion;
 
     auto find_library = [&](const std::string& group_path, const std::string& artifact,
-                            const std::string& lib_version, const std::string& classifier) -> fs::path {
-        std::string jar_name = artifact + "-" + lib_version +
-                               (classifier.empty() ? "" : "-" + classifier) + ".jar";
-        fs::path lib_path = version_dir / "libraries" / group_path / artifact / lib_version / jar_name;
-        if (fs::exists(lib_path)) return lib_path;
-        lib_path = vanilla_dir / "libraries" / group_path / artifact / lib_version / jar_name;
-        if (fs::exists(lib_path)) return lib_path;
-        lib_path = launcher_paths::shared_libraries_dir() / group_path / artifact / lib_version / jar_name;
-        if (fs::exists(lib_path)) return lib_path;
-        return {};
-    };
+                        const std::string& lib_version, const std::string& classifier) -> fs::path {
+    std::string jar_name = artifact + "-" + lib_version +
+                           (classifier.empty() ? "" : "-" + classifier) + ".jar";
+    fs::path lib_path = version_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+    if (fs::exists(lib_path)) return lib_path;
+    lib_path = vanilla_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+    if (fs::exists(lib_path)) return lib_path;
+    lib_path = launcher_paths::shared_libraries_dir() / group_path / artifact / lib_version / jar_name;
+    if (fs::exists(lib_path)) return lib_path;
+
+    // Legacy Forge (1.7.10 / 1.12.2): Prism может хранить universal под
+    // <mc>-<forge>-<mc>, а в name указывать <mc>-<forge>. Прямой путь тогда
+    // не совпадает с файлом на диске. Ищем forge-*-<classifier>.jar в любой
+    // подпапке net/minecraftforge/forge/*/.
+    if (artifact == "forge" && group_path == "net/minecraftforge") {
+        const fs::path bases[] = {
+            version_dir / "libraries" / group_path / artifact,
+            vanilla_dir / "libraries" / group_path / artifact,
+            launcher_paths::shared_libraries_dir() / group_path / artifact
+        };
+        const std::string suffix = classifier.empty()
+            ? std::string(".jar")
+            : ("-" + classifier + ".jar");
+        for (const auto& base : bases) {
+            std::error_code ec2;
+            if (!fs::exists(base, ec2)) continue;
+            for (const auto& sub : fs::directory_iterator(base, ec2)) {
+                if (ec2 || !sub.is_directory()) continue;
+                for (const auto& f : fs::directory_iterator(sub.path(), ec2)) {
+                    if (ec2 || !f.is_regular_file()) continue;
+                    const std::string fn = f.path().filename().string();
+                    if (fn.rfind("forge-", 0) != 0) continue;
+                    if (fn.size() < suffix.size()) continue;
+                    if (fn.compare(fn.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
+                    return f.path();
+                }
+            }
+        }
+    }
+
+    return {};
+};
 
     std::vector<std::string> classpath_entries;
     std::vector<std::string> missing_libs;
