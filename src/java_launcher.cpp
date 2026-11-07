@@ -790,8 +790,8 @@ static bool launch_impl(const std::string& nickname_raw,
         replace_all("${auth_uuid}", offline_uuid(nickname));
         replace_all("${auth_access_token}", "null");
         replace_all("${user_type}", "mojang");
+        replace_all("${user_properties}", "{}");
         replace_all("${version_type}", "release");
-        // Newer Forge profiles may use these JVM-argument placeholders.
         replace_all("${library_directory}", launcher_paths::shared_libraries_dir().string());
         replace_all("${classpath_separator}", std::string(1, CLASSPATH_SEP));
     };
