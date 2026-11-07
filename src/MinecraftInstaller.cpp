@@ -1465,18 +1465,36 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                     && lib["downloads"].contains("artifact")
                     && lib["downloads"]["artifact"].is_object();
 
-                if (has_artifact) {
-                    if (is_forge_universal) {
-                        auto& art = lib["downloads"]["artifact"];
-                        std::string path = art.value("path", "");
-                        std::string url  = art.value("url", "");
-                        if (!path.empty() && path.find("-universal.jar") == std::string::npos)
-                            art["path"] = path.substr(0, path.size() - 4) + "-universal.jar";
-                        if (!url.empty() && url.find("-universal.jar") == std::string::npos)
-                            art["url"]  = url.substr(0, url.size() - 4)  + "-universal.jar";
+                // forge-universal с готовым Prism-путём — путь авторитетнее name.
+                // Java_launcher строит путь из name, поэтому переписываем name под path,
+                // иначе файл окажется не там, где его ищет лаунчер.
+                if (is_forge_universal && has_artifact) {
+                    auto& art = lib["downloads"]["artifact"];
+                    std::string art_path = art.value("path", "");
+                    if (!art_path.empty()) {
+                        size_t forge_pos = art_path.find("/forge/");
+                        if (forge_pos != std::string::npos) {
+                            size_t ver_start = forge_pos + 7;
+                            size_t ver_end = art_path.find('/', ver_start);
+                            if (ver_end != std::string::npos) {
+                                std::string prism_version =
+                                    art_path.substr(ver_start, ver_end - ver_start);
+                                lib["name"] = "net.minecraftforge:forge:" +
+                                              prism_version + ":universal";
+                            }
+                        }
+                        std::string url = art.value("url", "");
+                        if (url.rfind("https://minecraft.net", 0) == 0
+                            || url.rfind("http://minecraft.net", 0) == 0
+                            || url.empty()) {
+                            art["url"] = "https://maven.minecraftforge.net/" + art_path;
+                        }
                     }
                     continue;
                 }
+
+                // Прочие либы с готовым artifact (включая обычные ванильные) — не трогаем.
+                if (has_artifact) continue;
 
                 std::vector<std::string> parts;
                 size_t start = 0, end = 0;
@@ -1501,9 +1519,9 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                     group_path + "/" + artifact + "/" + version + "/" + jar_name;
 
                 std::string base = lib.value("url", std::string());
-                if (base.empty() ||
-                    base.rfind("https://minecraft.net", 0) == 0 ||
-                    base.rfind("http://minecraft.net", 0) == 0) {
+                if (base.empty()
+                    || base.rfind("https://minecraft.net", 0) == 0
+                    || base.rfind("http://minecraft.net", 0) == 0) {
                     static const char* mojang[] = {
                         "net.minecraft:launchwrapper:", "lzma:lzma:", "org.ow2.asm:",
                         "com.google.guava:", "org.apache.commons:"
@@ -1518,11 +1536,12 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
 
                 if (!lib.contains("downloads") || !lib["downloads"].is_object())
                     lib["downloads"] = json::object();
+                if (!lib["downloads"].contains("artifact") || !lib["downloads"]["artifact"].is_object())
+                    lib["downloads"]["artifact"] = json::object();
 
-                json artifact_obj;
-                artifact_obj["path"] = maven_path;
-                artifact_obj["url"]  = base + maven_path;
-                lib["downloads"]["artifact"] = artifact_obj;
+                lib["downloads"]["artifact"]["path"] = maven_path;
+                lib["downloads"]["artifact"]["url"]  = base + maven_path;
+                lib["downloads"]["artifact"].erase("sha1");
             }
         }
 
@@ -1559,6 +1578,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         set_install_error(std::string("Forge install error: ") + e.what());
         return "";
     }
+}
 }const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
 
     {"1.19.4", "0.15.11"},
