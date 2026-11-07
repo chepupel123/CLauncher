@@ -1370,17 +1370,14 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         }
 
         const fs::path versions_dir = launcher_paths::shared_versions_dir();
+        const std::string id_prefix = mc_version + "-forge-";
 
         std::error_code ec;
         if (fs::exists(versions_dir, ec)) {
             for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
                 if (ec || !entry.is_directory()) continue;
                 const std::string id = entry.path().filename().string();
-                std::string id_lower = id;
-                for (auto& c : id_lower) c = static_cast<char>(
-                    std::tolower(static_cast<unsigned char>(c)));
-                if (id_lower.find("forge") == std::string::npos) continue;
-                if (id.find(mc_version) == std::string::npos) continue;
+                if (id.rfind(id_prefix, 0) != 0) continue;
                 if (!version_complete(entry.path())) continue;
                 if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
                 return id;
@@ -1403,8 +1400,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                     if (!req.is_object()) continue;
                     std::string uid = req.value("uid", "");
                     std::string equals_val = req.value("equals", "");
-                    if ((uid == "net.minecraft" && equals_val == mc_version) ||
-                        (uid == "net.minecraft" && mc_version.find(equals_val) != std::string::npos)) {
+                    if (uid == "net.minecraft" && equals_val == mc_version) {
                         match = true;
                         break;
                     }
@@ -1434,7 +1430,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         }
         if (is_cancelled()) return "";
 
-        const std::string expected_id = mc_version + "-forge-" + forge_version;
+        const std::string expected_id = id_prefix + forge_version;
         const fs::path installed_dir = versions_dir / expected_id;
         std::error_code mk_ec;
         fs::create_directories(installed_dir, mk_ec);
@@ -1504,19 +1500,21 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                 const std::string maven_path =
                     group_path + "/" + artifact + "/" + version + "/" + jar_name;
 
-                // Насильный, жесткий маппинг серверов для капризного старья 1.7.10
-                std::string base;
-                if (name.find("launchwrapper") != std::string::npos || name.find("lzma") != std::string::npos) {
-                    base = "https://minecraft.net";
-                } else if (name.find("asm") != std::string::npos || name.find("guava") != std::string::npos || name.find("commons-lang") != std::string::npos) {
-                    base = "https://minecraft.net"; // Mojang тоже зеркалит эти либы у себя!
-                } else {
-                    base = "https://maven.minecraftforge.net/";
+                std::string base = lib.value("url", std::string());
+                if (base.empty() ||
+                    base.rfind("https://minecraft.net", 0) == 0 ||
+                    base.rfind("http://minecraft.net", 0) == 0) {
+                    static const char* mojang[] = {
+                        "net.minecraft:launchwrapper:", "lzma:lzma:", "org.ow2.asm:",
+                        "com.google.guava:", "org.apache.commons:"
+                    };
+                    bool is_mojang = false;
+                    for (auto p : mojang)
+                        if (name.rfind(p, 0) == 0) { is_mojang = true; break; }
+                    base = is_mojang ? "https://libraries.minecraft.net/"
+                                     : "https://maven.minecraftforge.net/";
                 }
-                
-                if (!base.empty() && base.back() != '/') base += '/';
-
-
+                if (base.back() != '/') base += '/';
 
                 if (!lib.contains("downloads") || !lib["downloads"].is_object())
                     lib["downloads"] = json::object();
@@ -1548,6 +1546,8 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         if (!ensure_libraries(installed_dir, forge_metadata, 30, 45)) {
             if (g_last_error.empty())
                 set_install_error("Failed to download Forge libraries");
+            std::error_code cleanup_ec;
+            fs::remove(profile_json, cleanup_ec);
             return "";
         }
 
@@ -1559,9 +1559,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         set_install_error(std::string("Forge install error: ") + e.what());
         return "";
     }
-}
-
-const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
+}const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
 
     {"1.19.4", "0.15.11"},
     {"1.20.1", "0.15.11"},
