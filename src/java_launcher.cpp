@@ -15,6 +15,8 @@
 #include <cstring>
 #include <cstdio>
 #include <cctype>
+#include <chrono>
+#include <thread>
 #include <nlohmann/json.hpp>
 
 #ifdef _WIN32
@@ -34,9 +36,6 @@
 extern char** environ;
 #endif
 
-#include <chrono>
-#include <thread>
-
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -45,6 +44,89 @@ static const char CLASSPATH_SEP = ';';
 #else
 static const char CLASSPATH_SEP = ':';
 #endif
+
+// =========================================================================
+// ARGFILE ENCODING HELPERS (from our deep dive into Win32 API)
+// =========================================================================
+
+#ifdef _WIN32
+// Returns true if the string fits entirely into ANSI without data loss
+static bool wide_to_ansi(const std::wstring& w, std::string& out) {
+    out.clear();
+    if (w.empty()) return true;
+    BOOL used_default = FALSE;
+    int n = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w.data(), (int)w.size(),
+                                nullptr, 0, nullptr, &used_default);
+    if (n <= 0) return false;
+    out.assign(n, '\0');
+    WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w.data(), (int)w.size(),
+                        out.data(), n, nullptr, &used_default);
+    return !used_default;
+}
+
+static std::wstring shorten_one(const std::wstring& p) {
+    DWORD n = GetShortPathNameW(p.c_str(), nullptr, 0);
+    if (n == 0) return p; // path doesn't exist or 8.3 is disabled
+    std::wstring s(n, L'\0');
+    DWORD r = GetShortPathNameW(p.c_str(), s.data(), n);
+    if (r == 0 || r >= n) return p;
+    s.resize(r);
+    return s;
+}
+
+// Splits "-Dkey=a;b;c" and shortens only the segments that don't fit in ANSI
+static std::wstring shorten_problem_paths(const std::wstring& w) {
+    size_t eq = w.find(L'=');
+    std::wstring prefix;
+    if (!w.empty() && w[0] == L'-' && eq != std::wstring::npos)
+        prefix = w.substr(0, eq + 1);
+
+    std::wstring body = w.substr(prefix.size());
+    std::wstring res = prefix;
+    size_t start = 0;
+    while (true) {
+        size_t sep = body.find(L';', start);
+        std::wstring seg = body.substr(start, sep == std::wstring::npos ? std::wstring::npos : sep - start);
+        std::string tmp;
+        res += wide_to_ansi(seg, tmp) ? seg : shorten_one(seg);
+        if (sep == std::wstring::npos) break;
+        res += L';';
+        start = sep + 1;
+    }
+    return res;
+}
+#endif
+
+// UTF-8 -> encoding in which Java reads argfile (CP_ACP on Windows)
+static std::string to_argfile_encoding(const std::string& utf8, bool& lossy) {
+    lossy = false;
+#ifdef _WIN32
+    if (utf8.empty()) return utf8;
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
+    if (wlen <= 0) { lossy = true; return utf8; }
+    std::wstring w(wlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), w.data(), wlen);
+
+    std::string out;
+    if (wide_to_ansi(w, out)) return out;
+
+    // Fallback: 8.3 path for each problematic segment
+    std::wstring shortened = shorten_problem_paths(w);
+    if (wide_to_ansi(shortened, out)) {
+        return out;
+    }
+
+    lossy = true; // 8.3 disabled or file doesn't exist
+    return out;
+#else
+    return utf8;
+#endif
+}
+
+// =========================================================================
+// UTILITIES
+// =========================================================================
 
 static std::string getOptimizationFlags(int javaVersion) {
     if (javaVersion >= 17) {
@@ -66,12 +148,12 @@ static std::string getOptimizationFlags(int javaVersion) {
                             "-XX:+DisableExplicitGC "
                             "-XX:+PerfDisableSharedMem "
                             "-XX:ParallelGCThreads=" + std::to_string(gc_threads);
-        // Compact Object Headers support is available in current JDKs (25+), not Java 21.
         if (javaVersion >= 25) flags += " -XX:+UseCompactObjectHeaders";
         return flags;
     }
     return "-XX:+UseParallelGC -XX:MaxGCPauseMillis=50 -XX:+DisableExplicitGC";
 }
+
 static bool parse_maven_name(const std::string& lib_name, std::string& group_path,
                              std::string& artifact, std::string& lib_version,
                              std::string& classifier) {
@@ -147,8 +229,6 @@ static int query_java_major_version(const fs::path& java_path) {
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1;
     SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-    // CreateProcessW не гоняет строку через cmd.exe, поэтому 2>&1 здесь не работает.
-    // stderr забирается хэндлом hStdError.
     std::wstring cmd = L"\"" + java_path.wstring() + L"\" -version";
 
     STARTUPINFOW si{};
@@ -356,7 +436,7 @@ static fs::path game_log_path() {
 static void log_game_output_tail() {
     std::ifstream in(game_log_path());
     if (!in) {
-        LOG_ERROR("game.log не найден: " << game_log_path().string());
+        LOG_ERROR("game.log not found: " << game_log_path().string());
         return;
     }
     std::vector<std::string> lines;
@@ -365,10 +445,10 @@ static void log_game_output_tail() {
         if (!line.empty()) lines.push_back(std::move(line));
     }
     if (lines.empty()) {
-        LOG_ERROR("game.log пуст: " << game_log_path().string());
+        LOG_ERROR("game.log is empty: " << game_log_path().string());
         return;
     }
-    LOG_ERROR("Вывод игры (" << game_log_path().string() << "):");
+    LOG_ERROR("Game output (" << game_log_path().string() << "):");
     size_t start = lines.size() > 40 ? lines.size() - 40 : 0;
     for (size_t i = start; i < lines.size(); ++i)
         LOG_ERROR("game: " << lines[i]);
@@ -501,8 +581,6 @@ static int run_java(const fs::path& java_path, const std::vector<std::string>& a
 #endif
 }
 
-// Сравнение версий Minecraft ("1.9" < "1.18" и т.п.).
-// Нельзя сравнивать версии как строки: "1.9" < "1.18" дало бы false.
 static bool is_version_less(const std::string& v, int target_major, int target_minor, int target_patch) {
     int maj = 0, min = 0, pat = 0;
     std::sscanf(v.c_str(), "%d.%d.%d", &maj, &min, &pat);
@@ -535,7 +613,7 @@ static bool launch_impl(const std::string& nickname_raw,
         inst.major = javaManager.requiredMajor(mc_version_hint.empty() ? version : mc_version_hint);
         java_path = java_override.empty() ? javaManager.resolveJava(inst).string() : java_override;
     } catch (const std::exception& e) {
-        LOG_ERROR("Не удалось получить Java: " << e.what());
+        LOG_ERROR("Failed to resolve Java: " << e.what());
         return false;
     }
     LOG_INFO("Java: " << java_path);
@@ -546,7 +624,7 @@ static bool launch_impl(const std::string& nickname_raw,
         if (java_path.find("java8")  != std::string::npos) javaVersion = 8;
         else if (java_path.find("java17") != std::string::npos) javaVersion = 17;
         else if (java_path.find("java21") != std::string::npos) javaVersion = 21;
-        LOG_WARN("Не удалось определить версию Java, эвристика: " << javaVersion);
+        LOG_WARN("Failed to detect Java version, using heuristic: " << javaVersion);
     }
     LOG_INFO("Java version: " << javaVersion);
 
@@ -590,11 +668,11 @@ static bool launch_impl(const std::string& nickname_raw,
                     }
                 }
             } catch (const std::exception& e) {
-                LOG_WARN("Ошибка парсинга profile.json: " << e.what());
+                LOG_WARN("Error parsing profile.json: " << e.what());
             }
         }
     } else {
-        LOG_WARN("profile.json не найден, используем fallback");
+        LOG_WARN("profile.json not found, using fallback");
     }
 
     {
@@ -632,47 +710,42 @@ static bool launch_impl(const std::string& nickname_raw,
 
     auto find_library = [&](const std::string& group_path, const std::string& artifact,
                         const std::string& lib_version, const std::string& classifier) -> fs::path {
-    std::string jar_name = artifact + "-" + lib_version +
-                           (classifier.empty() ? "" : "-" + classifier) + ".jar";
-    fs::path lib_path = version_dir / "libraries" / group_path / artifact / lib_version / jar_name;
-    if (fs::exists(lib_path)) return lib_path;
-    lib_path = vanilla_dir / "libraries" / group_path / artifact / lib_version / jar_name;
-    if (fs::exists(lib_path)) return lib_path;
-    lib_path = launcher_paths::shared_libraries_dir() / group_path / artifact / lib_version / jar_name;
-    if (fs::exists(lib_path)) return lib_path;
+        std::string jar_name = artifact + "-" + lib_version +
+                               (classifier.empty() ? "" : "-" + classifier) + ".jar";
+        fs::path lib_path = version_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+        if (fs::exists(lib_path)) return lib_path;
+        lib_path = vanilla_dir / "libraries" / group_path / artifact / lib_version / jar_name;
+        if (fs::exists(lib_path)) return lib_path;
+        lib_path = launcher_paths::shared_libraries_dir() / group_path / artifact / lib_version / jar_name;
+        if (fs::exists(lib_path)) return lib_path;
 
-    // Legacy Forge (1.7.10 / 1.12.2): Prism может хранить universal под
-    // <mc>-<forge>-<mc>, а в name указывать <mc>-<forge>. Прямой путь тогда
-    // не совпадает с файлом на диске. Ищем forge-*-<classifier>.jar в любой
-    // подпапке net/minecraftforge/forge/*/.
-    if (artifact == "forge" && group_path == "net/minecraftforge") {
-        const fs::path bases[] = {
-            version_dir / "libraries" / group_path / artifact,
-            vanilla_dir / "libraries" / group_path / artifact,
-            launcher_paths::shared_libraries_dir() / group_path / artifact
-        };
-        const std::string suffix = classifier.empty()
-            ? std::string(".jar")
-            : ("-" + classifier + ".jar");
-        for (const auto& base : bases) {
-            std::error_code ec2;
-            if (!fs::exists(base, ec2)) continue;
-            for (const auto& sub : fs::directory_iterator(base, ec2)) {
-                if (ec2 || !sub.is_directory()) continue;
-                for (const auto& f : fs::directory_iterator(sub.path(), ec2)) {
-                    if (ec2 || !f.is_regular_file()) continue;
-                    const std::string fn = f.path().filename().string();
-                    if (fn.rfind("forge-", 0) != 0) continue;
-                    if (fn.size() < suffix.size()) continue;
-                    if (fn.compare(fn.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
-                    return f.path();
+        if (artifact == "forge" && group_path == "net/minecraftforge") {
+            const fs::path bases[] = {
+                version_dir / "libraries" / group_path / artifact,
+                vanilla_dir / "libraries" / group_path / artifact,
+                launcher_paths::shared_libraries_dir() / group_path / artifact
+            };
+            const std::string suffix = classifier.empty()
+                ? std::string(".jar")
+                : ("-" + classifier + ".jar");
+            for (const auto& base : bases) {
+                std::error_code ec2;
+                if (!fs::exists(base, ec2)) continue;
+                for (const auto& sub : fs::directory_iterator(base, ec2)) {
+                    if (ec2 || !sub.is_directory()) continue;
+                    for (const auto& f : fs::directory_iterator(sub.path(), ec2)) {
+                        if (ec2 || !f.is_regular_file()) continue;
+                        const std::string fn = f.path().filename().string();
+                        if (fn.rfind("forge-", 0) != 0) continue;
+                        if (fn.size() < suffix.size()) continue;
+                        if (fn.compare(fn.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
+                        return f.path();
+                    }
                 }
             }
         }
-    }
-
-    return {};
-};
+        return {};
+    };
 
     std::vector<std::string> classpath_entries;
     std::vector<std::string> missing_libs;
@@ -682,8 +755,7 @@ static bool launch_impl(const std::string& nickname_raw,
         for (const auto& lib : prof["libraries"]) {
             if (!lib.contains("name")) continue;
             if (!library_allowed(lib)) continue;
-            // 1.12.2: jinput-platform has only natives classifiers, no artifact jar.
-            // Installer extracts it into versions/<ver>/natives. Not a classpath entry.
+            
             if (lib.contains("natives") &&
                 !(lib.contains("downloads") && lib["downloads"].contains("artifact"))) {
                 continue;
@@ -691,7 +763,6 @@ static bool launch_impl(const std::string& nickname_raw,
 
             std::string lib_name = lib["name"].get<std::string>();
 
-            // Patch duplicated version for legacy Forge (Prism): "1.7.10-10.13.4.1614-1.7.10" -> "1.7.10-10.13.4.1614"
             if (lib_name.find("net.minecraftforge:forge:") != std::string::npos) {
                 size_t first_colon = lib_name.find(':');
                 size_t second_colon = lib_name.find(':', first_colon + 1);
@@ -712,7 +783,7 @@ static bool launch_impl(const std::string& nickname_raw,
                 classpath_entries.push_back(lib_path.string());
             } else {
                 missing_libs.push_back(lib_name);
-                LOG_WARN("Библиотека не найдена: " << lib_name);
+                LOG_WARN("Library not found: " << lib_name);
             }
         }
     };
@@ -728,14 +799,14 @@ static bool launch_impl(const std::string& nickname_raw,
                 try {
                     v_file >> v_profile;
                     add_libraries_from(v_profile);
-                    LOG_INFO("Ванильные библиотеки добавлены");
+                    LOG_INFO("Vanilla libraries added");
                 } catch (const std::exception& e) {
-                    LOG_ERROR("Ошибка парсинга ванильного JSON: " << e.what());
+                    LOG_ERROR("Error parsing vanilla JSON: " << e.what());
                     return false;
                 }
             }
         } else {
-            LOG_ERROR("Ванильный JSON не найден: " << vanilla_json_path.string());
+            LOG_ERROR("Vanilla JSON not found: " << vanilla_json_path.string());
             return false;
         }
     } else {
@@ -743,17 +814,13 @@ static bool launch_impl(const std::string& nickname_raw,
     }
 
     if (isForge) {
-        // Legacy Forge (1.12.2, 1.7.10) uses LaunchWrapper and patches classes
-        // from the vanilla JAR at runtime, so the vanilla JAR must be on the
-        // classpath. Modern Forge (1.17+) uses JPMS and ships its own patched
-        // client-srg.jar; adding the vanilla JAR there causes package conflicts.
         const bool is_legacy_forge =
             mainClass.find("launchwrapper") != std::string::npos;
 
         if (is_legacy_forge) {
             fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
             if (!fs::exists(main_jar)) {
-                LOG_ERROR("Ванильный JAR не найден: " << main_jar.string());
+                LOG_ERROR("Vanilla JAR not found: " << main_jar.string());
                 return false;
             }
             classpath_entries.push_back(main_jar.string());
@@ -764,15 +831,15 @@ static bool launch_impl(const std::string& nickname_raw,
     } else {
         fs::path main_jar = vanilla_dir / (mcVersion + ".jar");
         if (!fs::exists(main_jar)) {
-            LOG_ERROR("Ванильный JAR не найден: " << main_jar.string());
+            LOG_ERROR("Vanilla JAR not found: " << main_jar.string());
             return false;
         }
         classpath_entries.push_back(main_jar.string());
     }
 
     if (!missing_libs.empty()) {
-        LOG_ERROR("Запуск прерван: " << missing_libs.size()
-                  << " библиотек отсутствует");
+        LOG_ERROR("Launch aborted: " << missing_libs.size()
+                  << " libraries missing");
         return false;
     }
 
@@ -791,7 +858,6 @@ static bool launch_impl(const std::string& nickname_raw,
     }
 
     fs::path natives_dir = version_dir / "natives";
-    // Нативы ставит установщик в ванильную версию (mcVersion = inheritsFrom), а не в профиль Forge.
     if (!fs::exists(natives_dir) || fs::is_empty(natives_dir)) {
         fs::path vanilla_natives = vanilla_dir / "natives";
         if (fs::exists(vanilla_natives) && !fs::is_empty(vanilla_natives))
@@ -802,9 +868,6 @@ static bool launch_impl(const std::string& nickname_raw,
         fs::create_directories(natives_dir, ec);
     }
 
-    // Forge's generated profile carries required module-path flags and launchTarget
-    // arguments (notably for 1.20.1+). Keep them profile-driven rather than
-    // hardcoding a Forge main class or a particular Forge build's arguments.
     auto replace_profile_variables = [&](std::string& arg) {
         auto replace_all = [&](const std::string& token, const std::string& replacement) {
             size_t at = 0;
@@ -837,7 +900,7 @@ static bool launch_impl(const std::string& nickname_raw,
             const auto& values = profile["arguments"][key];
             if (!values.is_array()) return;
             for (const auto& value : values) {
-                if (!value.is_string()) continue; // Forge 1.20.1 arguments are strings.
+                if (!value.is_string()) continue; 
                 std::string arg = value.get<std::string>();
                 replace_profile_variables(arg);
                 target.push_back(std::move(arg));
@@ -845,8 +908,6 @@ static bool launch_impl(const std::string& nickname_raw,
             return;
         }
 
-        // Legacy Forge (e.g. Minecraft 1.7.10 / 1.12.2) stores the complete
-        // client argument template in minecraftArguments, including --tweakClass.
         if (std::string(key) != "game" || !profile.contains("minecraftArguments") ||
             !profile["minecraftArguments"].is_string()) return;
         std::istringstream legacy_args(profile["minecraftArguments"].get<std::string>());
@@ -859,7 +920,6 @@ static bool launch_impl(const std::string& nickname_raw,
 
     std::vector<std::string> jvm_args;
     jvm_args.push_back("-Xmx" + std::to_string(memory_mb) + "M");
-    // -Xms = -Xmx aborts Java instantly if the machine cannot commit that much.
     jvm_args.push_back("-Xms" + std::to_string(std::min(memory_mb, 512)) + "M");
     {
         std::istringstream flags(getOptimizationFlags(javaVersion));
@@ -872,7 +932,6 @@ static bool launch_impl(const std::string& nickname_raw,
     jvm_args.push_back("-Dfile.encoding=UTF-8");
     append_profile_arguments("jvm", jvm_args);
 
-    // CVE-2021-44228 (Log4Shell): 1.18.0 и ниже уязвимы. 1.18.1 и выше — нет.
     if (is_version_less(mcVersion, 1, 18, 1)) {
         jvm_args.push_back("-Dlog4j2.formatMsgNoLookups=true");
     }
@@ -881,16 +940,14 @@ static bool launch_impl(const std::string& nickname_raw,
         fs::path mods_dir = mods_path;
         if (fs::exists(mods_dir) && !fs::is_empty(mods_dir)) {
             jvm_args.push_back("-Dfabric.addMods=" + mods_dir.string());
-            LOG_INFO("Папка модов подключена: " << mods_dir.string());
+            LOG_INFO("Mods directory mounted: " << mods_dir.string());
         }
     }
 
-        std::vector<std::string> game_args;
+    std::vector<std::string> game_args;
     const bool has_legacy_args = profile.contains("minecraftArguments") &&
                                  profile["minecraftArguments"].is_string();
 
-    // Legacy Forge profiles provide the full argument list themselves. Avoid
-    // duplicating options such as --gameDir and --username.
     if (!has_legacy_args) {
         game_args.push_back("--username");    game_args.push_back(nickname);
         game_args.push_back("--uuid");        game_args.push_back(offline_uuid(nickname));
@@ -908,9 +965,6 @@ static bool launch_impl(const std::string& nickname_raw,
     }
     append_profile_arguments("game", game_args);
 
-    // Legacy Forge (< 1.13): LaunchWrapper требует --tweakClass FMLTweaker.
-    // Без него LaunchWrapper подставляет VanillaTweaker и падает с
-    // ClassNotFoundException: net.minecraft.client.Minecraft на обфусцированном jar.
     if (isForge && is_version_less(mcVersion, 1, 13, 0)) {
         bool has_tweak = false;
         for (size_t i = 0; i < game_args.size(); ++i) {
@@ -932,102 +986,96 @@ static bool launch_impl(const std::string& nickname_raw,
     bool use_argfile = (javaVersion >= 9);
 
     if (use_argfile) {
-    std::ofstream af(argfile, std::ios::binary);
-    if (!af.is_open()) {
-        LOG_ERROR("Failed to create argfile: " << argfile.string());
-        return false;
-    }
-
-    // Вспомогательная лямбда для вывода понятной ошибки пользователю и очистки мусора
-    auto fail_with_hint = [&](const std::string& tech_reason) -> bool {
-        LOG_ERROR("Critical error: " << tech_reason);
-        LOG_ERROR("SOLUTION: Please move the launcher and game folder to a path");
-        LOG_ERROR("containing only Latin letters and numbers (e.g., C:\\Minecraft).");
-        af.close();
-        std::error_code ec;
-        fs::remove(argfile, ec); // Удаляем битый/недописанный файл
-        return false;
-    };
-
-    // Лямбда для записи одного аргумента
-    auto write_arg = [&](const std::string& arg, bool is_path) -> bool {
-        bool lossy = false;
-        std::string s = to_argfile_encoding(arg, lossy);
-        
-        if (lossy) {
-            return fail_with_hint("argument does not fit into ANSI encoding: " + arg);
+        std::ofstream af(argfile, std::ios::binary);
+        if (!af.is_open()) {
+            LOG_ERROR("Failed to create argfile: " << argfile.string());
+            return false;
         }
 
-        if (is_path) {
-            std::replace(s.begin(), s.end(), '\\', '/');
-        }
-
-        af << '"';
-        for (char c : s) {
-            if (c == '"' || c == '\\') af << '\\';
-            af << c;
-        }
-        af << "\"\n";
-        return true;
-    };
-
-    bool ok = true;
-
-    // 1. JVM аргументы
-    for (const auto& a : jvm_args) {
-        bool is_path = (a.rfind("-Djava.library.path=", 0) == 0);
-        if (!write_arg(a, is_path)) {
-            ok = false; 
-            break; // fail_with_hint уже почистил файл
-        }
-    }
-
-    // 2. Classpath
-    if (ok) {
-        af << "-cp ";
-        ok = write_arg(classpath, true);
-    }
-
-    af.flush();
-    if (!ok || !af) {
-        if (ok) { // Если упало не на write_arg, а на flush/диске
-            LOG_ERROR("Failed to write to argfile (possibly out of disk space).");
+        auto fail_with_hint = [&](const std::string& tech_reason) -> bool {
+            LOG_ERROR("Critical error: " << tech_reason);
+            LOG_ERROR("SOLUTION: Please move the launcher and game folder to a path");
+            LOG_ERROR("containing only Latin letters and numbers (e.g., C:\\Minecraft).");
             af.close();
             std::error_code ec;
-            fs::remove(argfile, ec);
-        }
-        return false;
-    }
-    af.close();
+            fs::remove(argfile, ec); 
+            return false;
+        };
 
-    // 3. Формируем путь к самому argfile (ANSI-safe через 8.3)
-    std::string argfile_arg;
+        auto write_arg = [&](const std::string& arg, bool is_path) -> bool {
+            bool lossy = false;
+            std::string s = to_argfile_encoding(arg, lossy);
+            
+            if (lossy) {
+                return fail_with_hint("argument does not fit into ANSI encoding: " + arg);
+            }
+
+            if (is_path) {
+                std::replace(s.begin(), s.end(), '\\', '/');
+            }
+
+            af << '"';
+            for (char c : s) {
+                if (c == '"' || c == '\\') af << '\\';
+                af << c;
+            }
+            af << "\"\n";
+            return true;
+        };
+
+        bool ok = true;
+
+        for (const auto& a : jvm_args) {
+            bool is_path = (a.rfind("-Djava.library.path=", 0) == 0);
+            if (!write_arg(a, is_path)) {
+                ok = false; 
+                break; 
+            }
+        }
+
+        if (ok) {
+            af << "-cp ";
+            ok = write_arg(classpath, true);
+        }
+
+        af.flush();
+        if (!ok || !af) {
+            if (ok) { 
+                LOG_ERROR("Failed to write to argfile (possibly out of disk space).");
+                af.close();
+                std::error_code ec;
+                fs::remove(argfile, ec);
+            }
+            return false;
+        }
+        af.close();
+
+        std::string argfile_arg;
 #ifdef _WIN32
-    {
-        std::wstring wpath = argfile.wstring();
-        std::wstring wshort = shorten_one(wpath);
-        std::string ansi_path;
-        if (!wide_to_ansi(wshort, ansi_path)) {
-            return fail_with_hint("argfile path does not fit into ANSI encoding: " + argfile.string());
+        {
+            std::wstring wpath = argfile.wstring();
+            std::wstring wshort = shorten_one(wpath);
+            std::string ansi_path;
+            if (!wide_to_ansi(wshort, ansi_path)) {
+                return fail_with_hint("argfile path does not fit into ANSI encoding: " + argfile.string());
+            }
+            std::replace(ansi_path.begin(), ansi_path.end(), '\\', '/');
+            argfile_arg = std::move(ansi_path);
         }
-        std::replace(ansi_path.begin(), ansi_path.end(), '\\', '/');
-        argfile_arg = std::move(ansi_path);
-    }
 #else
-    argfile_arg = argfile.string();
+        argfile_arg = argfile.string();
 #endif
-
-    // Кавычки не ставим! win_quote_arg / execvp сделают это сами.
-    exec_args.push_back("@" + argfile_arg);
-} else {
+        exec_args.push_back("@" + argfile_arg);
+    } else {
         for (const auto& a : jvm_args) exec_args.push_back(a);
         exec_args.push_back("-cp");
         exec_args.push_back(classpath);
     }
+    
     exec_args.push_back(mainClass);
     for (const auto& a : game_args) exec_args.push_back(a);
 
-    LOG_INFO("=== ЗАПУСК MINECRAFT ===");
+    LOG_INFO("=== LAUNCHING MINECRAFT ===");
     LOG_INFO("Nick:       " << nickname);
     LOG_INFO("Version:    " << version << (isFabric ? " (Fabric MC " + mcVersion + ")" : ""));
     LOG_INFO("Memory:     " << memory_mb << " MB");
@@ -1046,28 +1094,27 @@ static bool launch_impl(const std::string& nickname_raw,
                        /*close_on_launch=*/!wait_for_exit);
 
     if (ret == -1) {
-        LOG_ERROR("Не удалось создать процесс Java");
+        LOG_ERROR("Failed to create Java process");
         log_game_output_tail();
         return false;
     }
     if (wait_for_exit) {
         if (ret == 0) {
-            LOG_INFO("Процесс игры завершился с кодом 0");
+            LOG_INFO("Game process exited with code 0");
             return true;
         }
-        LOG_ERROR("Процесс игры завершился с кодом " << ret);
+        LOG_ERROR("Game process exited with code " << ret);
         log_game_output_tail();
         return false;
     }
     if (ret == 0) {
-        LOG_INFO("Игра успешно запущена");
+        LOG_INFO("Game launched successfully");
         return true;
     }
-    LOG_ERROR("Игра упала сразу после старта (код " << ret << ")");
+    LOG_ERROR("Game crashed immediately after launch (code " << ret << ")");
     log_game_output_tail();
     return false;
 }
-
 
 bool JavaLauncher::launch(const std::string& nickname_raw,
                           const std::string& version_id,
