@@ -932,19 +932,94 @@ static bool launch_impl(const std::string& nickname_raw,
     bool use_argfile = (javaVersion >= 9);
 
     if (use_argfile) {
-        std::ofstream af(argfile);
-        if (!af.is_open()) {
-            LOG_ERROR("Не удалось создать argfile: " << argfile.string());
-            return false;
-        }
-        for (const auto& a : jvm_args) {
-            if (a.rfind("-D", 0) == 0) af << "\"" << a << "\"\n";
-            else af << a << "\n";
-        }
-        af << "-cp \"" << classpath << "\"\n";
+    std::ofstream af(argfile, std::ios::binary);
+    if (!af.is_open()) {
+        LOG_ERROR("Failed to create argfile: " << argfile.string());
+        return false;
+    }
+
+    // Вспомогательная лямбда для вывода понятной ошибки пользователю и очистки мусора
+    auto fail_with_hint = [&](const std::string& tech_reason) -> bool {
+        LOG_ERROR("Critical error: " << tech_reason);
+        LOG_ERROR("SOLUTION: Please move the launcher and game folder to a path");
+        LOG_ERROR("containing only Latin letters and numbers (e.g., C:\\Minecraft).");
         af.close();
-        exec_args.push_back("@" + argfile.string());
-    } else {
+        std::error_code ec;
+        fs::remove(argfile, ec); // Удаляем битый/недописанный файл
+        return false;
+    };
+
+    // Лямбда для записи одного аргумента
+    auto write_arg = [&](const std::string& arg, bool is_path) -> bool {
+        bool lossy = false;
+        std::string s = to_argfile_encoding(arg, lossy);
+        
+        if (lossy) {
+            return fail_with_hint("argument does not fit into ANSI encoding: " + arg);
+        }
+
+        if (is_path) {
+            std::replace(s.begin(), s.end(), '\\', '/');
+        }
+
+        af << '"';
+        for (char c : s) {
+            if (c == '"' || c == '\\') af << '\\';
+            af << c;
+        }
+        af << "\"\n";
+        return true;
+    };
+
+    bool ok = true;
+
+    // 1. JVM аргументы
+    for (const auto& a : jvm_args) {
+        bool is_path = (a.rfind("-Djava.library.path=", 0) == 0);
+        if (!write_arg(a, is_path)) {
+            ok = false; 
+            break; // fail_with_hint уже почистил файл
+        }
+    }
+
+    // 2. Classpath
+    if (ok) {
+        af << "-cp ";
+        ok = write_arg(classpath, true);
+    }
+
+    af.flush();
+    if (!ok || !af) {
+        if (ok) { // Если упало не на write_arg, а на flush/диске
+            LOG_ERROR("Failed to write to argfile (possibly out of disk space).");
+            af.close();
+            std::error_code ec;
+            fs::remove(argfile, ec);
+        }
+        return false;
+    }
+    af.close();
+
+    // 3. Формируем путь к самому argfile (ANSI-safe через 8.3)
+    std::string argfile_arg;
+#ifdef _WIN32
+    {
+        std::wstring wpath = argfile.wstring();
+        std::wstring wshort = shorten_one(wpath);
+        std::string ansi_path;
+        if (!wide_to_ansi(wshort, ansi_path)) {
+            return fail_with_hint("argfile path does not fit into ANSI encoding: " + argfile.string());
+        }
+        std::replace(ansi_path.begin(), ansi_path.end(), '\\', '/');
+        argfile_arg = std::move(ansi_path);
+    }
+#else
+    argfile_arg = argfile.string();
+#endif
+
+    // Кавычки не ставим! win_quote_arg / execvp сделают это сами.
+    exec_args.push_back("@" + argfile_arg);
+} else {
         for (const auto& a : jvm_args) exec_args.push_back(a);
         exec_args.push_back("-cp");
         exec_args.push_back(classpath);
