@@ -50,9 +50,20 @@ static bool version_supports_forge(const std::string& version) {
     if (version.rfind("26.", 0) == 0) return true;
     return false;
 }
-
 static bool version_supports_quilt(const std::string& version) {
-    return version_supports_fabric(version);
+    if (version.rfind("26.", 0) == 0) return true;
+    
+    int major = 0, minor = 0, patch = -1;
+    if (std::sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch) >= 2) {
+        if (major != 1) return false;
+        if (minor > 14) return true; 
+        if (minor == 14) {
+            if (patch == -1) return false;
+            return patch >= 4;
+        }
+    }
+    return false;
+}
 }
 
 static bool version_supports_neoforge(const std::string& version) {
