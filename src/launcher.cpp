@@ -64,7 +64,6 @@ static bool version_supports_quilt(const std::string& version) {
     }
     return false;
 }
-}
 
 static bool version_supports_neoforge(const std::string& version) {
     if (version.rfind("1.20.", 0) == 0) return true;
