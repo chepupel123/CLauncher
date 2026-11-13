@@ -106,6 +106,16 @@ namespace {
         for (size_t i = start; i < lines.size(); ++i)
             LOG_INFO(prefix << lines[i]);
     }
+
+    // NeoForge for 1.20.1 installs into "1.20.1-forge-47.1.x", the same id scheme
+    // as Forge. Tell them apart by the profile: NeoForge lists net.neoforged.* libraries.
+    bool is_neoforge_profile(const fs::path& profile_json)
+    {
+        std::ifstream in(profile_json);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        return ss.str().find("net.neoforged") != std::string::npos;
+    }
 }
 
 std::string MinecraftInstaller::findFabricDir(const std::string& mc_version)
@@ -350,6 +360,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                 if (id.rfind(id_prefix, 0) != 0) continue;
                 if (!version_complete(entry.path())) continue;
                 if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
+                if (is_neoforge_profile(entry.path() / (id + ".json"))) continue;
                 return id;
             }
         }
@@ -560,6 +571,303 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
         return "";
     }
 }
+
+namespace {
+    bool is_safe_token(const std::string& s)
+    {
+        if (s.empty()) return false;
+        for (char c : s) {
+            if (!(std::isalnum((unsigned char)c) || c == '.' ||
+                  c == '_' || c == '-' || c == '+'))
+                return false;
+        }
+        return true;
+    }
+
+    std::string path_utf8(const fs::path& p)
+    {
+        const auto u8 = p.u8string();
+        return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+    }
+
+    // Newest version in the list: releases win over pre-releases ("-beta", "-alpha"),
+    // then the numeric parts are compared. Neither Quilt meta nor NeoForge maven
+    // guarantee that the list is sorted.
+    std::string pick_latest_version(const std::vector<std::string>& versions)
+    {
+        auto key = [](const std::string& v) {
+            std::vector<long> nums{ v.find('-') == std::string::npos ? 1L : 0L };
+            for (size_t i = 0; i < v.size();) {
+                if (!std::isdigit((unsigned char)v[i])) { ++i; continue; }
+                long n = 0;
+                for (; i < v.size() && std::isdigit((unsigned char)v[i]); ++i)
+                    n = n * 10 + (v[i] - '0');
+                nums.push_back(n);
+            }
+            return nums;
+        };
+        std::string best;
+        std::vector<long> best_key;
+        for (const auto& v : versions) {
+            auto k = key(v);
+            if (best.empty() || k > best_key) { best = v; best_key = std::move(k); }
+        }
+        return best;
+    }
+
+    // Already installed (.complete) version whose id starts with `prefix` and ends with `suffix`.
+    std::string find_installed_version(const std::string& prefix, const std::string& suffix)
+    {
+        const fs::path versions_dir = launcher_paths::shared_versions_dir();
+        std::error_code ec;
+        if (!fs::exists(versions_dir, ec)) return "";
+        for (const auto& entry : fs::directory_iterator(versions_dir, ec)) {
+            if (ec || !entry.is_directory()) continue;
+            const std::string id = entry.path().filename().string();
+            if (id.rfind(prefix, 0) != 0) continue;
+            if (id.size() < prefix.size() + suffix.size() ||
+                id.compare(id.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
+            if (!version_complete(entry.path())) continue;
+            if (!fs::is_regular_file(entry.path() / (id + ".json"))) continue;
+            return id;
+        }
+        return "";
+    }
+}
+
+std::string MinecraftInstaller::installQuilt(const std::string& mc_version)
+{
+    g_cancel_requested.store(false);
+    reset_speed_state();
+    g_last_error.clear();
+
+    try {
+        if (!is_safe_token(mc_version)) {
+            set_install_error("Invalid Minecraft version for Quilt");
+            return "";
+        }
+
+        std::string existing = find_installed_version("quilt-loader-", "-" + mc_version);
+        if (!existing.empty()) return existing;
+
+        const std::string meta_url =
+            "https://meta.quiltmc.org/v3/versions/loader/" + mc_version;
+
+        std::vector<std::string> loaders;
+        const json loader_list = download_json(meta_url);
+        if (loader_list.is_array()) {
+            for (const auto& entry : loader_list) {
+                if (!entry.is_object() || !entry.contains("loader")) continue;
+                std::string v = entry["loader"].value("version", "");
+                if (is_safe_token(v)) loaders.push_back(std::move(v));
+            }
+        }
+        const std::string loader_version = pick_latest_version(loaders);
+        if (loader_version.empty()) {
+            set_install_error("No Quilt loader found for Minecraft " + mc_version);
+            return "";
+        }
+        LOG_INFO("Using Quilt loader " << loader_version);
+
+        if (!install(mc_version)) {
+            if (g_last_error.empty())
+                set_install_error("Failed to install Vanilla " + mc_version);
+            return "";
+        }
+
+        json profile = download_json(meta_url + "/" + loader_version + "/profile/json");
+        if (!profile.is_object() || !profile.contains("libraries") ||
+            !profile["libraries"].is_array()) {
+            set_install_error("Invalid Quilt profile for " + mc_version);
+            return "";
+        }
+
+        const std::string expected_id =
+            profile.value("id", "quilt-loader-" + loader_version + "-" + mc_version);
+        if (!is_safe_token(expected_id) || expected_id.rfind("quilt-loader-", 0) != 0) {
+            set_install_error("Unexpected Quilt profile id: " + expected_id);
+            return "";
+        }
+
+        // Quilt libraries only carry "name" + "url" (maven base), while
+        // ensure_libraries downloads what is listed in downloads.artifact.
+        for (auto& lib : profile["libraries"]) {
+            if (!lib.is_object() || !lib.contains("name") || !lib["name"].is_string()) continue;
+            if (lib.contains("downloads") && lib["downloads"].contains("artifact")) continue;
+            std::string rel;
+            if (!maven_relative_path(lib["name"].get<std::string>(), rel)) continue;
+            std::string base = lib.value("url", "https://maven.quiltmc.org/repository/release/");
+            if (!base.empty() && base.back() != '/') base += '/';
+            lib["downloads"]["artifact"]["path"] = rel;
+            lib["downloads"]["artifact"]["url"]  = base + rel;
+        }
+
+        const fs::path installed_dir = launcher_paths::shared_versions_dir() / expected_id;
+        fs::create_directories(installed_dir);
+
+        const fs::path profile_json = installed_dir / (expected_id + ".json");
+        {
+            std::ofstream out(profile_json);
+            if (!out) {
+                set_install_error("Failed to write Quilt profile JSON: " + profile_json.string());
+                return "";
+            }
+            out << profile.dump(2);
+        }
+
+        report_progress(30, "Installing Quilt...");
+        LOG_INFO("Installing Quilt " << loader_version << " for Minecraft " << mc_version);
+
+        if (!ensure_libraries(installed_dir, profile, 30, 45)) {
+            if (g_last_error.empty())
+                set_install_error("Failed to download Quilt libraries");
+            std::error_code cleanup_ec;
+            fs::remove(profile_json, cleanup_ec);
+            return "";
+        }
+
+        mark_version_complete(installed_dir);
+        report_progress(45, "Quilt installed");
+        LOG_INFO("Quilt installed: " << expected_id);
+        return expected_id;
+    } catch (const std::exception& e) {
+        set_install_error(std::string("Quilt install error: ") + e.what());
+        return "";
+    }
+}
+
+std::string MinecraftInstaller::installNeoForge(const std::string& mc_version)
+{
+    g_cancel_requested.store(false);
+    reset_speed_state();
+    g_last_error.clear();
+
+    try {
+        if (!is_safe_token(mc_version)) {
+            set_install_error("Invalid Minecraft version for NeoForge");
+            return "";
+        }
+
+        // NeoForge version = Minecraft version without the leading "1.":
+        //   1.21.1 -> 21.1.x, 1.21 -> 21.0.x, 26.1 -> 26.1.0.x, 26.1.2 -> 26.1.2.x.
+        // 1.20.1 is the exception: it is published as the legacy artifact
+        // net.neoforged:forge (1.20.1-47.1.x) and installs as "1.20.1-forge-47.1.x".
+        const bool legacy = (mc_version == "1.20.1");
+        const std::string artifact = legacy ? "forge" : "neoforge";
+        std::string version_prefix;
+        if (legacy) {
+            version_prefix = "1.20.1-47.1.";
+        } else {
+            version_prefix = mc_version.rfind("1.", 0) == 0 ? mc_version.substr(2) : mc_version;
+            if (std::count(mc_version.begin(), mc_version.end(), '.') < 2)
+                version_prefix += ".0";
+            version_prefix += ".";
+        }
+        const std::string id_prefix =
+            legacy ? "1.20.1-forge-47.1." : "neoforge-" + version_prefix;
+
+        std::string existing = find_installed_version(id_prefix, "");
+        if (!existing.empty()) return existing;
+
+        const std::string maven = "https://maven.neoforged.net/";
+        const json listing = download_json(
+            maven + "api/maven/versions/releases/net/neoforged/" + artifact);
+
+        std::vector<std::string> candidates;
+        if (listing.contains("versions") && listing["versions"].is_array()) {
+            for (const auto& v : listing["versions"]) {
+                if (!v.is_string()) continue;
+                std::string s = v.get<std::string>();
+                if (s.rfind(version_prefix, 0) == 0 && is_safe_token(s))
+                    candidates.push_back(std::move(s));
+            }
+        }
+        const std::string neoforge_version = pick_latest_version(candidates);
+        if (neoforge_version.empty()) {
+            set_install_error("No NeoForge build found for Minecraft " + mc_version);
+            return "";
+        }
+        const std::string expected_id =
+            legacy ? "1.20.1-forge-" + neoforge_version.substr(std::string("1.20.1-").size())
+                   : "neoforge-" + neoforge_version;
+        LOG_INFO("Using NeoForge " << neoforge_version);
+
+        if (!install(mc_version)) {
+            if (g_last_error.empty())
+                set_install_error("Failed to install Vanilla " + mc_version);
+            return "";
+        }
+
+        const std::string installer_name =
+            artifact + "-" + neoforge_version + "-installer.jar";
+        const fs::path installer_path = launcher_paths::cache_dir() / installer_name;
+        if (!fs::exists(installer_path)) {
+            LOG_INFO("Downloading NeoForge Installer...");
+            fs::create_directories(installer_path.parent_path());
+            const std::string url = maven + "releases/net/neoforged/" + artifact + "/" +
+                                    neoforge_version + "/" + installer_name;
+            if (!download(url, installer_path)) {
+                if (g_last_error.empty())
+                    set_install_error("Failed to download NeoForge Installer");
+                return "";
+            }
+        }
+
+        // The installer refuses to run without a launcher profile in the target dir.
+        const fs::path minecraft_dir = launcher_paths::shared_dir();
+        const fs::path profiles_json = minecraft_dir / "launcher_profiles.json";
+        if (!fs::exists(profiles_json)) {
+            std::ofstream out(profiles_json);
+            out << "{\"profiles\":{}}";
+        }
+
+        std::string java_cmd = "java";
+        try {
+            JavaManager jm;
+            fs::path jp = jm.ensureJava(jm.requiredMajor(mc_version));
+            if (!jp.empty()) java_cmd = path_utf8(jp);
+        } catch (...) {}
+
+        report_progress(35, "Installing NeoForge...");
+        LOG_INFO("Installing NeoForge " << neoforge_version << " for Minecraft " << mc_version);
+        const fs::path neoforge_log = launcher_paths::cache_dir() / "neoforge-installer.log";
+        std::string cmd = "\"" + java_cmd + "\" -jar \"" + path_utf8(installer_path) +
+                          "\" --installClient \"" + path_utf8(minecraft_dir) +
+                          "\" > \"" + path_utf8(neoforge_log) + "\" 2>&1";
+        int status = std::system(cmd.c_str());
+        std::string neoforge_out;
+        {
+            std::ifstream in(neoforge_log);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            neoforge_out = ss.str();
+        }
+        if (status != 0) {
+            log_output_lines("NeoForge installer: ", neoforge_out);
+            std::string line = pick_error_line(neoforge_out);
+            if (line.empty())
+                line = "NeoForge installation failed (status " + std::to_string(status) + ")";
+            set_install_error(line);
+            return "";
+        }
+
+        const fs::path installed_dir = launcher_paths::shared_versions_dir() / expected_id;
+        if (!fs::is_regular_file(installed_dir / (expected_id + ".json"))) {
+            log_output_lines("NeoForge installer: ", neoforge_out);
+            set_install_error("NeoForge version not found after install: " + expected_id);
+            return "";
+        }
+
+        mark_version_complete(installed_dir);
+        report_progress(45, "NeoForge installed");
+        LOG_INFO("NeoForge installed: " << expected_id);
+        return expected_id;
+    } catch (const std::exception& e) {
+        set_install_error(std::string("NeoForge install error: ") + e.what());
+        return "";
+    }
+}
+
 const std::unordered_map<std::string, std::string> FabricVersionMap::COMPATIBILITY = {
 
     {"1.19.4", "0.15.11"},
