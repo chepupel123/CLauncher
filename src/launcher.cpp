@@ -33,7 +33,6 @@ static const int RAM_OPTIONS[] = {512, 1024, 2048, 3072, 4096};
 static const int RAM_OPTIONS_COUNT = 5;
 
 static bool version_supports_fabric(const std::string& version) {
-    // Поддержка Fabric для линейки 1.x (начиная с 1.14)
     if (version.size() >= 4 && version[0] == '1' && version[1] == '.') {
         size_t pos = 2;
         int minor = 0;
@@ -43,25 +42,21 @@ static bool version_supports_fabric(const std::string& version) {
         }
         return minor >= 14;
     }
-
-    // Поддержка Fabric для year-based версий (26.1, 26.2, 26.3+)
     return version.rfind("26.", 0) == 0;
 }
 
 static bool version_supports_forge(const std::string& version) {
-    // Forge поддерживает классические версии 1.x и новые версии 26.x+.
     if (version.size() >= 2 && version[0] == '1' && version[1] == '.') return true;
     if (version.rfind("26.", 0) == 0) return true;
     return false;
 }
 
 static bool version_supports_quilt(const std::string& version) {
-    return version_supports_fabric(version); // Quilt работает там же, где Fabric
+    return version_supports_fabric(version);
 }
 
 static bool version_supports_neoforge(const std::string& version) {
-    // Без сравнения строк: "1.20.10" лексикографически меньше "1.20.2".
-    if (version.rfind("1.20.", 0) == 0) return true; // 1.20.1+ (для 1.20 сборок нет)
+    if (version.rfind("1.20.", 0) == 0) return true;
     if (version == "1.21" || version.rfind("1.21.", 0) == 0) return true;
     if (version.rfind("26.", 0) == 0) return true;
     return false;
@@ -92,106 +87,48 @@ static std::string sfmt(const std::string& tmpl, const std::string& arg) {
  
 static const L10n& l10n_en() {
     static const L10n L{
-                "CLauncher",
-             "Language",
-             "Nickname",
-              "Version",
-           "Mod Loader:",
+                "CLauncher", "Language", "Nickname", "Version", "Mod Loader:",
             "Performance mods: Sodium + Lithium + FerriteCore",
-        "Sodium — render FPS, Lithium — game logic/ticks,\n"
-                         "FerriteCore — memory usage.\n"
-                         "Versions are picked automatically for the selected Minecraft version.",
+        "Sodium — render FPS, Lithium — game logic/ticks,\nFerriteCore — memory usage.\nVersions are picked automatically for the selected Minecraft version.",
              "Mods require the Fabric loader (select it above)",
-         "Vanilla Minecraft cannot load mods.\n"
-                                 "Switch Mod Loader to Fabric to enable mods.",
-              "My Mods",
-          "Mods folder for this Fabric version.\n"
-                         "Drop your .jar files here — they load on launch.\n"
-                         "Each Minecraft version has its own folder — no mod conflicts.",
-         "Fabric for %s is not installed yet — press Play first",
-         "Resource Packs",
-                 "Shared resource packs folder (~/.minecraft/resourcepacks).\n"
-                           "Download a resource pack .zip and put it here —\n"
-                           "it will appear in the in-game resource pack list.",
-          "Memory allocation:",
-         "Selected: %d MB",
-                  "Play",
-               "Report bug on Discord",
-                 "Ready",
-             "Preparing...",
-           "Installing Vanilla %s...",
-        "Installing Fabric for %s...",
-             "Fabric installed: %s",
-               "Installation failed: %s",
-         "Installing Sodium / Lithium / FerriteCore...",
-                  "Mods failed (see terminal), launching without them",
-             "Launching %s...",
-         "Game launched!",
-         "Launch failed! Check the terminal.",
+         "Vanilla Minecraft cannot load mods.\nSwitch Mod Loader to Fabric to enable mods.",
+              "My Mods", "Mods folder for this Fabric version.\nDrop your .jar files here — they load on launch.\nEach Minecraft version has its own folder — no mod conflicts.",
+         "Fabric for %s is not installed yet — press Play first", "Resource Packs",
+                 "Shared resource packs folder (~/.minecraft/resourcepacks).\nDownload a resource pack .zip and put it here —\nit will appear in the in-game resource pack list.",
+          "Memory allocation:", "Selected: %d MB", "Play", "Report bug on Discord", "Ready", "Preparing...",
+           "Installing Vanilla %s...", "Installing Fabric for %s...", "Fabric installed: %s",
+               "Installation failed: %s", "Installing Sodium / Lithium / FerriteCore...",
+                  "Mods failed (see terminal), launching without them", "Launching %s...",
+         "Game launched!", "Launch failed! Check the terminal.",
           "TTF font not found - Russian UI would show question marks (staying English)",
          "Invalid characters removed (A-Z, a-z, 0-9, _ only)",
          "Failed to load versions. Check your internet connection.",
-         "The version list is empty. Click Reload to retry.\n"
-                          "If the problem persists, see clauncher.log.\n"
-                          "On Windows, make sure cacert.pem is next to the .exe.",
-         "Reload",
-         "Loading versions...",
-         "(%.2f MB/s)",
-         "— %d:%02d left",
-         "checking...",
+         "The version list is empty. Click Reload to retry.\nIf the problem persists, see clauncher.log.\nOn Windows, make sure cacert.pem is next to the .exe.",
+         "Reload", "Loading versions...", "(%.2f MB/s)", "— %d:%02d left", "checking...",
     };
     return L;
 }
  
 static const L10n& l10n_ru() {
     static const L10n L{
-                "CЛаунчер",
-             "Язык",
-             "Никнейм",
-              "Версия",
-           "Загрузчик модов:",
+                "CЛаунчер", "Язык", "Никнейм", "Версия", "Загрузчик модов:",
             "Оптимизация: Sodium + Lithium + FerriteCore",
-        "Sodium — FPS рендера, Lithium — игровая логика/тики,\n"
-                         "FerriteCore — потребление памяти.\n"
-                         "Версии подбираются автоматически под выбранную версию Minecraft.",
+        "Sodium — FPS рендера, Lithium — игровая логика/тики,\nFerriteCore — потребление памяти.\nВерсии подбираются автоматически под выбранную версию Minecraft.",
              "Моды требуют загрузчик Fabric (выберите выше)",
-         "Ванильный Minecraft не умеет загружать моды.\n"
-                                 "Переключите Mod Loader на Fabric.",
-              "Мои моды",
-          "Папка модов этой Fabric-версии.\n"
-                         "Кидайте сюда свои .jar — они загрузятся при запуске.\n"
-                         "У каждой версии своя папка — моды не конфликтуют.",
-         "Fabric для %s ещё не установлена — сначала нажмите Play",
-         "Ресурспаки",
-                 "Общая папка ресурспаков (~/.minecraft/resourcepacks).\n"
-                           "Скачайте .zip ресурспака и положите сюда —\n"
-                           "он появится в списке в настройках игры.",
-          "Выделение памяти:",
-         "Выбрано: %d МБ",
-                  "Играть",
-               "Сообщить об ошибке в Discord",
-                 "Готов к запуску",
-             "Подготовка...",
-           "Установка Vanilla %s...",
-        "Установка Fabric для %s...",
-             "Fabric установлена: %s",
-               "Ошибка установки: %s",
-         "Установка Sodium / Lithium / FerriteCore...",
-                  "Моды не установились (см. терминал), запускаю без них",
-             "Запуск %s...",
-         "Игра запущена!",
-         "Ошибка запуска! Проверьте терминал.",
+         "Ванильный Minecraft не умеет загружать моды.\nПереключите Mod Loader на Fabric.",
+              "Мои моды", "Папка модов этой Fabric-версии.\nКидайте сюда свои .jar — они загрузятся при запуске.\nУ каждой версии своя папка — моды не конфликтуют.",
+         "Fabric для %s ещё не установлена — сначала нажмите Play", "Ресурспаки",
+                 "Общая папка ресурспаков (~/.minecraft/resourcepacks).\nСкачайте .zip ресурспака и положите сюда —\nон появится в списке в настройках игры.",
+          "Выделение памяти:", "Выбрано: %d МБ", "Играть", "Сообщить об ошибке в Discord", "Готов к запуску", "Подготовка...",
+           "Установка Vanilla %s...", "Установка Fabric для %s...", "Fabric установлена: %s",
+               "Ошибка установки: %s", "Установка Sodium / Lithium / FerriteCore...",
+                  "Моды не установились (см. терминал), запускаю без них", "Запуск %s...",
+         "Игра запущена!", "Ошибка запуска! Проверьте терминал.",
           "Не найден TTF-шрифт — русский интерфейс покажет вопросики (остаюсь на английском)",
          "Убраны недопустимые символы (только A-Z, a-z, 0-9, _)",
          "Не удалось загрузить список версий. Проверьте подключение к интернету.",
-         "Список версий пуст. Нажмите Reload, чтобы повторить.\n"
-                             "Если проблема повторяется — смотрите clauncher.log.\n"
-                             "На Windows убедитесь, что cacert.pem лежит рядом с .exe.",
-         "Обновить",
-         "Загрузка версий...",
-         "(%.2f МБ/с)",
-         "— осталось %d:%02d",
-         "проверка...",
+         "Список версий пуст. Нажмите Reload, чтобы повторить.\nЕсли проблема повторяется — смотрите clauncher.log.\nНа Windows убедитесь, что cacert.pem лежит рядом с .exe.",
+         "Обновить", "Загрузка версий...", "(%.2f МБ/с)", "— осталось %d:%02d", "проверка...",
     };
     return L;
 }
@@ -302,7 +239,6 @@ void Launcher::init() {
         set_status(tr().ready, 0.0f);
     }
 
-    // Загружаем инстансы
     instance_manager_.load_all(launcher_paths::instances_dir());
     Instance* inst = instance_manager_.get_selected();
     if (!inst) {
@@ -334,9 +270,6 @@ void Launcher::setup_imgui() {
     style.ItemSpacing = ImVec2(8, 8);
     style.WindowRounding = 0.0f;
     style.FrameRounding = 0.0f;
- 
- 
- 
  
     ImFont* font = nullptr;
     static const char* kFontCandidates[] = {
@@ -392,7 +325,6 @@ void Launcher::render() {
         return;
     }
 
-    // Reload выполнился в фоновом потоке — забираем результат в главном.
     if (reload_ready_.exchange(false)) {
         std::vector<std::string> fetched;
         bool failed = false;
@@ -476,7 +408,6 @@ bool Launcher::load_settings() {
         if (j.value("lang", "en") == "ru") lang_ = UiLang::Ru;
         std::string nick = j.value("nickname", std::string("Steve"));
  
- 
         std::string clean = sanitize_nickname(nick);
         if (clean != nick) {
             LOG_INFO("Settings: nickname sanitized '" << nick
@@ -503,16 +434,12 @@ bool Launcher::load_settings() {
 }
 
 void Launcher::reload_versions() {
-    // Кнопка Reload в UI. Чтобы не блокировать интерфейс, загрузка манифеста
-    // идёт в отдельном потоке, а забор результата — в render() (главный поток).
-    if (reload_requested_) return;  // уже выполняется
+    if (reload_requested_) return;
     reload_requested_ = true;
     reload_ready_ = false;
     set_status(tr().loading_versions, 0.0f);
     LOG_INFO("Manual manifest reload requested");
 
-    // Локализацию фиксируем до запуска потока, чтобы фоновый поток не читал
-    // lang_ (который может поменяться в главном потоке из переключателя языка).
     const std::string ready_text = tr().ready;
 
     if (reload_thread_.joinable()) reload_thread_.join();
@@ -520,7 +447,6 @@ void Launcher::reload_versions() {
         std::vector<std::string> fetched;
         bool ok = false;
         try {
-            // Принудительно обновляем кеш (без ожидания TTL).
             ok = VersionManager::fetch_and_cache_manifest();
             fetched = VersionManager::get_release_versions();
         } catch (const std::exception& e) {
@@ -531,7 +457,7 @@ void Launcher::reload_versions() {
             std::lock_guard<std::mutex> lk(status_mutex_);
             versions_pending_ = std::move(fetched);
             versions_reload_failed_ = !ok || versions_pending_.empty();
-            reload_ready_ = true;   // render() заберёт результат
+            reload_ready_ = true;
         }
         set_status(ready_text, 0.0f);
     });
@@ -564,7 +490,6 @@ void Launcher::draw_ui() {
         ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoTitleBar);
  
- 
     ImGui::Text("%s", L.title.c_str());
     ImGui::SameLine(ImGui::GetWindowWidth() - 190);
     ImGui::SetNextItemWidth(170);
@@ -577,7 +502,6 @@ void Launcher::draw_ui() {
     }
     ImGui::Separator();
 
-    // Выбор инстанса
     Instance* cur_inst = instance_manager_.get_selected();
     std::string cur_name = cur_inst ? cur_inst->name : "—";
     if (ImGui::BeginCombo("##instance_combo", cur_name.c_str())) {
@@ -699,8 +623,6 @@ void Launcher::draw_ui() {
     ImGui::SameLine(0, 12);
     ImGui::Text("Instance");
  
- 
- 
     auto nick_filter = [](ImGuiInputTextCallbackData* data) -> int {
         ImWchar c = data->EventChar;
         if (c > 127) return 1;
@@ -737,7 +659,6 @@ void Launcher::draw_ui() {
             ImGui::EndCombo();
         }
     } else {
-        // Пустой список версий: красное предупреждение + кнопка Reload.
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.60f, 0.16f, 0.16f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 0.26f, 0.26f, 1.0f));
@@ -765,7 +686,6 @@ void Launcher::draw_ui() {
     const bool neoforge_ok = version_supports_neoforge(config_.selected_version);
     const bool any_loader_ok = fabric_ok || forge_ok || quilt_ok || neoforge_ok;
 
-    // If the currently selected loader isn't supported for this version, fall back to Vanilla.
     if (config_.mod_loader == ModLoader::Fabric && !fabric_ok)
         config_.mod_loader = ModLoader::Vanilla;
     if (config_.mod_loader == ModLoader::Forge && !forge_ok)
@@ -783,7 +703,6 @@ void Launcher::draw_ui() {
         else if (config_.mod_loader == ModLoader::NeoForge) loader_label = "NeoForge";
 
         if (ImGui::BeginCombo("##loader_combo", loader_label)) {
-            // Vanilla is always available.
             if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla)) {
                 config_.mod_loader = ModLoader::Vanilla;
                 preferred_mod_loader_ = ModLoader::Vanilla;
@@ -791,7 +710,6 @@ void Launcher::draw_ui() {
             }
             if (config_.mod_loader == ModLoader::Vanilla) ImGui::SetItemDefaultFocus();
 
-            // Show Fabric only for versions supported by Fabric.
             if (fabric_ok) {
                 if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric)) {
                     config_.mod_loader = ModLoader::Fabric;
@@ -801,7 +719,6 @@ void Launcher::draw_ui() {
                 if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
             }
 
-            // Show Forge only for versions supported by Forge.
             if (forge_ok) {
                 if (ImGui::Selectable("Forge", config_.mod_loader == ModLoader::Forge)) {
                     config_.mod_loader = ModLoader::Forge;
@@ -810,7 +727,6 @@ void Launcher::draw_ui() {
                 if (config_.mod_loader == ModLoader::Forge) ImGui::SetItemDefaultFocus();
             }
 
-            // Show Quilt only for versions supported by Quilt.
             if (quilt_ok) {
                 if (ImGui::Selectable("Quilt", config_.mod_loader == ModLoader::Quilt)) {
                     config_.mod_loader = ModLoader::Quilt;
@@ -820,7 +736,6 @@ void Launcher::draw_ui() {
                 if (config_.mod_loader == ModLoader::Quilt) ImGui::SetItemDefaultFocus();
             }
 
-            // Show NeoForge only for versions supported by NeoForge.
             if (neoforge_ok) {
                 if (ImGui::Selectable("NeoForge", config_.mod_loader == ModLoader::NeoForge)) {
                     config_.mod_loader = ModLoader::NeoForge;
@@ -836,31 +751,24 @@ void Launcher::draw_ui() {
     }
     ImGui::Spacing();
  
- 
     if (fabric_ok && config_.mod_loader == ModLoader::Fabric) {
         ImGui::Checkbox(L.perf_mods.c_str(), &perf_mods_checked_);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.perf_mods_tip.c_str());
     }
  
- 
     if (!is_working) {
         if (config_.mod_loader == ModLoader::Fabric) {
             if (ImGui::Button(L.my_mods.c_str(), ImVec2(340, 0))) {
                 std::string fabric_dir = MinecraftInstaller::findFabricDir(config_.selected_version);
- 
- 
- 
                 if (fabric_dir.empty()) {
-                    LOG_WARN("[My Mods] Fabric is not installed for "
-                             << config_.selected_version);
+                    LOG_WARN("[My Mods] Fabric is not installed for " << config_.selected_version);
                     set_status(sfmt(L.fabric_not_installed, config_.selected_version), 0.0f);
                 } else {
                     fs::path mods = (instance_manager_.get_selected() ? instance_manager_.get_selected()->mods_dir() : launcher_paths::minecraft_dir() / "mods");
                     std::error_code ec;
                     fs::create_directories(mods, ec);
                     const auto mods_u8 = mods.u8string();
-                    const std::string mods_path_utf8(
-                        reinterpret_cast<const char*>(mods_u8.data()), mods_u8.size());
+                    const std::string mods_path_utf8(reinterpret_cast<const char*>(mods_u8.data()), mods_u8.size());
                     JavaLauncher::open_url(mods_path_utf8);
                 }
             }
@@ -870,14 +778,11 @@ void Launcher::draw_ui() {
                    config_.mod_loader == ModLoader::Quilt ||
                    config_.mod_loader == ModLoader::NeoForge) {
             if (ImGui::Button(L.my_mods.c_str(), ImVec2(340, 0))) {
-                fs::path mods = instance_manager_.get_selected()
-                    ? instance_manager_.get_selected()->mods_dir()
-                    : launcher_paths::minecraft_dir() / "mods";
+                fs::path mods = instance_manager_.get_selected() ? instance_manager_.get_selected()->mods_dir() : launcher_paths::minecraft_dir() / "mods";
                 std::error_code ec;
                 fs::create_directories(mods, ec);
                 const auto mods_u8 = mods.u8string();
-                const std::string mods_path_utf8(
-                    reinterpret_cast<const char*>(mods_u8.data()), mods_u8.size());
+                const std::string mods_path_utf8(reinterpret_cast<const char*>(mods_u8.data()), mods_u8.size());
                 JavaLauncher::open_url(mods_path_utf8);
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.my_mods_tip.c_str());
@@ -891,8 +796,7 @@ void Launcher::draw_ui() {
             std::error_code ec;
             fs::create_directories(rp, ec);
             const auto rp_u8 = rp.u8string();
-            const std::string rp_path_utf8(
-                reinterpret_cast<const char*>(rp_u8.data()), rp_u8.size());
+            const std::string rp_path_utf8(reinterpret_cast<const char*>(rp_u8.data()), rp_u8.size());
             JavaLauncher::open_url(rp_path_utf8);
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.rp_tip.c_str());
@@ -915,7 +819,6 @@ void Launcher::draw_ui() {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
- 
  
     {
         std::string st;
@@ -980,18 +883,25 @@ void Launcher::handle_play_button() {
         LOG_ERROR("No version selected");
         return;
     }
-    if (config_.mod_loader == ModLoader::Fabric &&
-        !version_supports_fabric(config_.selected_version)) {
-        LOG_WARN("Fabric requested for unsupported Minecraft "
-                 << config_.selected_version << " — falling back to Vanilla");
+    
+    // НОВЫЕ ПРОВЕРКИ ДЛЯ QUILT И NEOFORGE
+    if (config_.mod_loader == ModLoader::Fabric && !version_supports_fabric(config_.selected_version)) {
+        LOG_WARN("Fabric requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
         config_.mod_loader = ModLoader::Vanilla;
     }
-    if (config_.mod_loader == ModLoader::Forge &&
-        !version_supports_forge(config_.selected_version)) {
-        LOG_WARN("Forge requested for unsupported Minecraft "
-                 << config_.selected_version << " — falling back to Vanilla");
+    if (config_.mod_loader == ModLoader::Forge && !version_supports_forge(config_.selected_version)) {
+        LOG_WARN("Forge requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
         config_.mod_loader = ModLoader::Vanilla;
     }
+    if (config_.mod_loader == ModLoader::Quilt && !version_supports_quilt(config_.selected_version)) {
+        LOG_WARN("Quilt requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+    if (config_.mod_loader == ModLoader::NeoForge && !version_supports_neoforge(config_.selected_version)) {
+        LOG_WARN("NeoForge requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+
     if (is_working) return;
     if (worker_.joinable()) worker_.join();
 
@@ -1002,10 +912,8 @@ void Launcher::handle_play_button() {
     MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
     set_status(tr().preparing, 0.0f);
  
- 
     g_active_launcher = this;
     MinecraftInstaller::set_progress_callback(&installer_progress_cb, nullptr);
- 
  
     Config cfg = config_;
     bool install_mods = (config_.mod_loader == ModLoader::Fabric) && perf_mods_checked_;
@@ -1088,7 +996,6 @@ void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& 
         is_working = false;
         return;
     }
- 
  
     if (install_mods) {
         if (MinecraftInstaller::is_cancelled()) {
