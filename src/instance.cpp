@@ -11,6 +11,7 @@ static const char* modloader_to_str(ModLoader m) {
         case ModLoader::Fabric: return "fabric";
         case ModLoader::Forge: return "forge";
         case ModLoader::NeoForge: return "neoforge";
+        case ModLoader::Quilt: return "quilt";
         case ModLoader::Vanilla: default: return "vanilla";
     }
 }
@@ -18,6 +19,7 @@ static ModLoader modloader_from_str(const std::string& s) {
     if (s == "fabric") return ModLoader::Fabric;
     if (s == "forge") return ModLoader::Forge;
     if (s == "neoforge") return ModLoader::NeoForge;
+    if (s == "quilt") return ModLoader::Quilt;
     return ModLoader::Vanilla;
 }
 
