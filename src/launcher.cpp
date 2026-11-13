@@ -54,6 +54,18 @@ static bool version_supports_forge(const std::string& version) {
     if (version.rfind("26.", 0) == 0) return true;
     return false;
 }
+
+static bool version_supports_quilt(const std::string& version) {
+    return version_supports_fabric(version); // Quilt работает там же, где Fabric
+}
+
+static bool version_supports_neoforge(const std::string& version) {
+    // Без сравнения строк: "1.20.10" лексикографически меньше "1.20.2".
+    if (version.rfind("1.20.", 0) == 0) return true; // 1.20.1+ (для 1.20 сборок нет)
+    if (version == "1.21" || version.rfind("1.21.", 0) == 0) return true;
+    if (version.rfind("26.", 0) == 0) return true;
+    return false;
+}
  
 static bool nickname_char_ok(unsigned int c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -197,6 +209,10 @@ static const char* ru_stage(const char* stage) {
         {"Done", "Готово"},
         {"Installing Fabric...", "Установка Fabric..."},
         {"Fabric installed", "Fabric установлена"},
+        {"Installing Quilt...", "Установка Quilt..."},
+        {"Quilt installed", "Quilt установлен"},
+        {"Installing NeoForge...", "Установка NeoForge..."},
+        {"NeoForge installed", "NeoForge установлен"},
     };
     auto it = M.find(stage);
     return it != M.end() ? it->second : stage;
@@ -470,7 +486,11 @@ bool Launcher::load_settings() {
         std::snprintf(nickname_buf_, sizeof(nickname_buf_), "%s", clean.c_str());
         memory_index_ = std::clamp(j.value("memory_index", 1), 0, RAM_OPTIONS_COUNT - 1);
         config_.selected_version = j.value("selected_version", std::string());
-        if (j.value("mod_loader", 0) == 1) preferred_mod_loader_ = ModLoader::Fabric;
+        const int saved_loader = j.value("mod_loader", 0);
+        if (saved_loader == static_cast<int>(ModLoader::Fabric) ||
+            saved_loader == static_cast<int>(ModLoader::NeoForge) ||
+            saved_loader == static_cast<int>(ModLoader::Quilt))
+            preferred_mod_loader_ = static_cast<ModLoader>(saved_loader);
         config_.memory_mb = RAM_OPTIONS[memory_index_];
         LOG_INFO("Settings loaded: lang=" << j.value("lang", "en")
                  << ", nickname=" << nickname_buf_);
@@ -741,18 +761,26 @@ void Launcher::draw_ui() {
 
     const bool fabric_ok = version_supports_fabric(config_.selected_version);
     const bool forge_ok = version_supports_forge(config_.selected_version);
-    const bool any_loader_ok = fabric_ok || forge_ok;
+    const bool quilt_ok = version_supports_quilt(config_.selected_version);
+    const bool neoforge_ok = version_supports_neoforge(config_.selected_version);
+    const bool any_loader_ok = fabric_ok || forge_ok || quilt_ok || neoforge_ok;
 
     // If the currently selected loader isn't supported for this version, fall back to Vanilla.
     if (config_.mod_loader == ModLoader::Fabric && !fabric_ok)
         config_.mod_loader = ModLoader::Vanilla;
     if (config_.mod_loader == ModLoader::Forge && !forge_ok)
         config_.mod_loader = ModLoader::Vanilla;
+    if (config_.mod_loader == ModLoader::Quilt && !quilt_ok)
+        config_.mod_loader = ModLoader::Vanilla;
+    if (config_.mod_loader == ModLoader::NeoForge && !neoforge_ok)
+        config_.mod_loader = ModLoader::Vanilla;
 
     if (any_loader_ok) {
         const char* loader_label = "Vanilla";
         if (config_.mod_loader == ModLoader::Fabric) loader_label = "Fabric";
         else if (config_.mod_loader == ModLoader::Forge) loader_label = "Forge";
+        else if (config_.mod_loader == ModLoader::Quilt) loader_label = "Quilt";
+        else if (config_.mod_loader == ModLoader::NeoForge) loader_label = "NeoForge";
 
         if (ImGui::BeginCombo("##loader_combo", loader_label)) {
             // Vanilla is always available.
@@ -780,6 +808,26 @@ void Launcher::draw_ui() {
                     save_settings();
                 }
                 if (config_.mod_loader == ModLoader::Forge) ImGui::SetItemDefaultFocus();
+            }
+
+            // Show Quilt only for versions supported by Quilt.
+            if (quilt_ok) {
+                if (ImGui::Selectable("Quilt", config_.mod_loader == ModLoader::Quilt)) {
+                    config_.mod_loader = ModLoader::Quilt;
+                    preferred_mod_loader_ = ModLoader::Quilt;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::Quilt) ImGui::SetItemDefaultFocus();
+            }
+
+            // Show NeoForge only for versions supported by NeoForge.
+            if (neoforge_ok) {
+                if (ImGui::Selectable("NeoForge", config_.mod_loader == ModLoader::NeoForge)) {
+                    config_.mod_loader = ModLoader::NeoForge;
+                    preferred_mod_loader_ = ModLoader::NeoForge;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::NeoForge) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
@@ -818,7 +866,9 @@ void Launcher::draw_ui() {
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.my_mods_tip.c_str());
             ImGui::SameLine();
-        } else if (config_.mod_loader == ModLoader::Forge) {
+        } else if (config_.mod_loader == ModLoader::Forge ||
+                   config_.mod_loader == ModLoader::Quilt ||
+                   config_.mod_loader == ModLoader::NeoForge) {
             if (ImGui::Button(L.my_mods.c_str(), ImVec2(340, 0))) {
                 fs::path mods = instance_manager_.get_selected()
                     ? instance_manager_.get_selected()->mods_dir()
@@ -1007,10 +1057,22 @@ void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& 
             launch_version = forge_ver;
             set_status("Forge installed: " + launch_version, 0.40f);
         }
-    } else {
-        set_status("NeoForge installation is not implemented yet", 0.0f);
-        is_working = false;
-        return;
+    } else if (cfg.mod_loader == ModLoader::Quilt) {
+        set_status("Installing Quilt for " + mc_version + "...", 0.05f);
+        std::string quilt_ver = MinecraftInstaller::installQuilt(mc_version);
+        if (!quilt_ver.empty()) {
+            install_ok = true;
+            launch_version = quilt_ver;
+            set_status("Quilt installed: " + launch_version, 0.40f);
+        }
+    } else if (cfg.mod_loader == ModLoader::NeoForge) {
+        set_status("Installing NeoForge for " + mc_version + "...", 0.05f);
+        std::string neoforge_ver = MinecraftInstaller::installNeoForge(mc_version);
+        if (!neoforge_ver.empty()) {
+            install_ok = true;
+            launch_version = neoforge_ver;
+            set_status("NeoForge installed: " + launch_version, 0.40f);
+        }
     }
  
     if (MinecraftInstaller::is_cancelled()) {
