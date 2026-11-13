@@ -5,4 +5,5 @@ enum class ModLoader {
     Fabric,
     Forge,
     NeoForge
+    Quilt
 };
