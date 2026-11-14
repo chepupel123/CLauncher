@@ -943,11 +943,11 @@ static bool launch_impl(const std::string& nickname_raw,
     
     if (isForge || mainClass.find("bootstraplauncher") != std::string::npos) {
         jvm_args.push_back("--add-opens");
-        jvm_args.push_back("java.base/java.lang.invoke=cpw.mods.securejarhandler");
+        jvm_args.push_back("java.base/java.lang.invoke=ALL-UNNAMED");
         jvm_args.push_back("--add-opens");
-        jvm_args.push_back("java.base/java.util.jar=cpw.mods.securejarhandler");
+        jvm_args.push_back("java.base/java.util.jar=ALL-UNNAMED");
         jvm_args.push_back("--add-exports");
-        jvm_args.push_back("java.base/sun.security.util=cpw.mods.securejarhandler");
+        jvm_args.push_back("java.base/sun.security.util=ALL-UNNAMED");
         jvm_args.push_back("--add-exports");
         jvm_args.push_back("jdk.naming.dns/com.sun.jndi.dns=java.naming");
         jvm_args.push_back("--add-modules");
