@@ -61,6 +61,12 @@ namespace {
         return true;
     }
 
+    // Перенесено сюда из нижнего namespace
+    std::string path_utf8(const fs::path& p)
+    {
+        const auto u8 = p.u8string();
+        return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+    }
 
     std::string pick_error_line(const std::string& text)
     {
@@ -173,7 +179,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
 
 
         std::string loader_version = FabricVersionMap::getLoaderForVersion(version);
-        auto is_safe_token = [](const std::string& s) {
+        auto is_safe_token_local = [](const std::string& s) {
             if (s.empty()) return false;
             for (char c : s) {
                 if (!(std::isalnum((unsigned char)c) || c == '.' ||
@@ -182,7 +188,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
             }
             return true;
         };
-        if (!is_safe_token(version) || !is_safe_token(loader_version)) {
+        if (!is_safe_token_local(version) || !is_safe_token_local(loader_version)) {
             set_install_error("Invalid version/loader string");
             return "";
         }
@@ -194,9 +200,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
             JavaManager jm;
             fs::path jp = jm.ensureJava(jm.requiredMajor(version));
             if (!jp.empty()) {
-                const auto java_path_u8 = jp.u8string();
-                java_cmd.assign(reinterpret_cast<const char*>(java_path_u8.data()),
-                                java_path_u8.size());
+                java_cmd = path_utf8(jp); // Используем нашу функцию
             }
         } catch (...) {}
 
@@ -666,15 +670,8 @@ namespace {
         return true;
     }
 
-    std::string path_utf8(const fs::path& p)
-    {
-        const auto u8 = p.u8string();
-        return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
-    }
+    // path_utf8 удалена отсюда, так как она теперь наверху
 
-    // Newest version in the list: releases win over pre-releases ("-beta", "-alpha"),
-    // then the numeric parts are compared. Neither Quilt meta nor NeoForge maven
-    // guarantee that the list is sorted.
     std::string pick_latest_version(const std::vector<std::string>& versions)
     {
         auto key = [](const std::string& v) {
@@ -697,7 +694,6 @@ namespace {
         return best;
     }
 
-    // Already installed (.complete) version whose id starts with `prefix` and ends with `suffix`.
     std::string find_installed_version(const std::string& prefix, const std::string& suffix)
     {
         const fs::path versions_dir = launcher_paths::shared_versions_dir();
@@ -771,8 +767,6 @@ std::string MinecraftInstaller::installQuilt(const std::string& mc_version)
             return "";
         }
 
-        // Quilt libraries only carry "name" + "url" (maven base), while
-        // ensure_libraries downloads what is listed in downloads.artifact.
         for (auto& lib : profile["libraries"]) {
             if (!lib.is_object() || !lib.contains("name") || !lib["name"].is_string()) continue;
             if (lib.contains("downloads") && lib["downloads"].contains("artifact")) continue;
@@ -830,10 +824,6 @@ std::string MinecraftInstaller::installNeoForge(const std::string& mc_version)
             return "";
         }
 
-        // NeoForge version = Minecraft version without the leading "1.":
-        //   1.21.1 -> 21.1.x, 1.21 -> 21.0.x, 26.1 -> 26.1.0.x, 26.1.2 -> 26.1.2.x.
-        // 1.20.1 is the exception: it is published as the legacy artifact
-        // net.neoforged:forge (1.20.1-47.1.x) and installs as "1.20.1-forge-47.1.x".
         const bool legacy = (mc_version == "1.20.1");
         const std::string artifact = legacy ? "forge" : "neoforge";
         std::string version_prefix;
@@ -895,7 +885,6 @@ std::string MinecraftInstaller::installNeoForge(const std::string& mc_version)
             }
         }
 
-        // The installer refuses to run without a launcher profile in the target dir.
         const fs::path minecraft_dir = launcher_paths::shared_dir();
         const fs::path profiles_json = minecraft_dir / "launcher_profiles.json";
         if (!fs::exists(profiles_json)) {
