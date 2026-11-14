@@ -46,11 +46,10 @@ static const char CLASSPATH_SEP = ':';
 #endif
 
 // =========================================================================
-// ARGFILE ENCODING HELPERS (from our deep dive into Win32 API)
+// ARGFILE ENCODING HELPERS
 // =========================================================================
 
 #ifdef _WIN32
-// Returns true if the string fits entirely into ANSI without data loss
 static bool wide_to_ansi(const std::wstring& w, std::string& out) {
     out.clear();
     if (w.empty()) return true;
@@ -66,7 +65,7 @@ static bool wide_to_ansi(const std::wstring& w, std::string& out) {
 
 static std::wstring shorten_one(const std::wstring& p) {
     DWORD n = GetShortPathNameW(p.c_str(), nullptr, 0);
-    if (n == 0) return p; // path doesn't exist or 8.3 is disabled
+    if (n == 0) return p;
     std::wstring s(n, L'\0');
     DWORD r = GetShortPathNameW(p.c_str(), s.data(), n);
     if (r == 0 || r >= n) return p;
@@ -74,7 +73,6 @@ static std::wstring shorten_one(const std::wstring& p) {
     return s;
 }
 
-// Splits "-Dkey=a;b;c" and shortens only the segments that don't fit in ANSI
 static std::wstring shorten_problem_paths(const std::wstring& w) {
     size_t eq = w.find(L'=');
     std::wstring prefix;
@@ -97,7 +95,6 @@ static std::wstring shorten_problem_paths(const std::wstring& w) {
 }
 #endif
 
-// UTF-8 -> encoding in which Java reads argfile (CP_ACP on Windows)
 static std::string to_argfile_encoding(const std::string& utf8, bool& lossy) {
     lossy = false;
 #ifdef _WIN32
@@ -111,13 +108,12 @@ static std::string to_argfile_encoding(const std::string& utf8, bool& lossy) {
     std::string out;
     if (wide_to_ansi(w, out)) return out;
 
-    // Fallback: 8.3 path for each problematic segment
     std::wstring shortened = shorten_problem_paths(w);
     if (wide_to_ansi(shortened, out)) {
         return out;
     }
 
-    lossy = true; // 8.3 disabled or file doesn't exist
+    lossy = true;
     return out;
 #else
     return utf8;
@@ -171,6 +167,16 @@ static bool parse_maven_name(const std::string& lib_name, std::string& group_pat
     artifact = parts[1];
     lib_version = parts[2];
     classifier = (parts.size() > 3) ? parts[3] : "";
+
+    // --- ФИКС ДЛЯ NEOFORGE: Убираем @jar из версии и классификатора ---
+    size_t at_pos = lib_version.find('@');
+    if (at_pos != std::string::npos) 
+        lib_version = lib_version.substr(0, at_pos);
+    
+    at_pos = classifier.find('@');
+    if (at_pos != std::string::npos) 
+        classifier = classifier.substr(0, at_pos);
+
     return true;
 }
 
@@ -653,7 +659,9 @@ static bool launch_impl(const std::string& nickname_raw,
                     assetIndex = profile["assetIndex"]["id"].get<std::string>();
                     LOG_INFO("AssetIndex from profile: " << assetIndex);
                 }
-                if (isFabric || isForge) {
+                
+                // --- ФИКС QUILT: Добавили isQuilt в проверку inheritsFrom ---
+                if (isFabric || isForge || isQuilt) {
                     if (profile.contains("inheritsFrom")) {
                         mcVersion = profile["inheritsFrom"].get<std::string>();
                     } else {
@@ -789,7 +797,8 @@ static bool launch_impl(const std::string& nickname_raw,
         }
     };
 
-    if (isFabric || isForge) {
+    // --- ФИКС QUILT: Добавили isQuilt, чтобы подгрузились ванильные библиотеки (LWJGL) ---
+    if (isFabric || isForge || isQuilt) {
         add_libraries_from(profile);
 
         fs::path vanilla_json_path = vanilla_dir / (mcVersion + ".json");
