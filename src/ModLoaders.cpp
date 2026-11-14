@@ -61,7 +61,7 @@ namespace {
         return true;
     }
 
-    // Перенесено сюда из нижнего namespace
+    // Перенесено в самый верх, чтобы installForge мог её использовать
     std::string path_utf8(const fs::path& p)
     {
         const auto u8 = p.u8string();
@@ -113,8 +113,7 @@ namespace {
             LOG_INFO(prefix << lines[i]);
     }
 
-    // NeoForge for 1.20.1 installs into "1.20.1-forge-47.1.x", the same id scheme
-    // as Forge. Tell them apart by the profile: NeoForge lists net.neoforged.* libraries.
+    // NeoForge на 1.20.1 ставится в "1.20.1-forge-...". Отличаем по наличию net.neoforged в JSON.
     bool is_neoforge_profile(const fs::path& profile_json)
     {
         std::ifstream in(profile_json);
