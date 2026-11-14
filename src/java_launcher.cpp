@@ -637,6 +637,7 @@ static bool launch_impl(const std::string& nickname_raw,
     bool isFabric = (version.find("fabric-loader-") == 0);
     bool isForge = (version.find("-forge-") != std::string::npos);
     bool isQuilt = (version.find("quilt-loader-") == 0);
+    bool isNeoForge = (version.find("neoforge-") == 0);
 
     json profile;
     bool main_class_from_profile = false;
@@ -660,8 +661,7 @@ static bool launch_impl(const std::string& nickname_raw,
                     LOG_INFO("AssetIndex from profile: " << assetIndex);
                 }
                 
-                // --- ФИКС QUILT: Добавили isQuilt в проверку inheritsFrom ---
-                if (isFabric || isForge || isQuilt) {
+                if (isFabric || isForge || isQuilt || isNeoForge) {
                     if (profile.contains("inheritsFrom")) {
                         mcVersion = profile["inheritsFrom"].get<std::string>();
                     } else {
@@ -797,8 +797,7 @@ static bool launch_impl(const std::string& nickname_raw,
         }
     };
 
-    // --- ФИКС QUILT: Добавили isQuilt, чтобы подгрузились ванильные библиотеки (LWJGL) ---
-    if (isFabric || isForge || isQuilt) {
+    if (isFabric || isForge || isQuilt || isNeoForge) {
         add_libraries_from(profile);
 
         fs::path vanilla_json_path = vanilla_dir / (mcVersion + ".json");
@@ -898,12 +897,12 @@ static bool launch_impl(const std::string& nickname_raw,
         replace_all("${version_type}", "release");
         replace_all("${library_directory}", launcher_paths::shared_libraries_dir().string());
         replace_all("${classpath_separator}", std::string(1, CLASSPATH_SEP));
+        replace_all("${natives_directory}", natives_dir.string());
     };
 
     auto append_profile_arguments = [&](const char* key, std::vector<std::string>& target) {
         const bool has_legacy = profile.contains("minecraftArguments") &&
                                 profile["minecraftArguments"].is_string();
-        if (!isForge && !has_legacy) return;
 
         if (profile.contains("arguments")) {
             if (!profile["arguments"].is_object() || !profile["arguments"].contains(key)) return;
@@ -912,6 +911,13 @@ static bool launch_impl(const std::string& nickname_raw,
             for (const auto& value : values) {
                 if (!value.is_string()) continue; 
                 std::string arg = value.get<std::string>();
+                
+                if (std::string(key) == "jvm") {
+                    if (arg == "-cp" || arg == "-classpath" || arg == "${classpath}") continue;
+                    if (arg.rfind("-Djava.library.path=", 0) == 0) continue;
+                    if (arg.find("${classpath}") != std::string::npos) continue;
+                }
+
                 replace_profile_variables(arg);
                 target.push_back(std::move(arg));
             }
@@ -941,46 +947,16 @@ static bool launch_impl(const std::string& nickname_raw,
     jvm_args.push_back("-Dminecraft.launcher.version=3.0");
     jvm_args.push_back("-Dfile.encoding=UTF-8");
     
-    if (isForge || mainClass.find("bootstraplauncher") != std::string::npos) {
-        jvm_args.push_back("--add-opens");
-        jvm_args.push_back("java.base/java.lang.invoke=ALL-UNNAMED");
-        jvm_args.push_back("--add-opens");
-        jvm_args.push_back("java.base/java.util.jar=ALL-UNNAMED");
-        jvm_args.push_back("--add-exports");
-        jvm_args.push_back("java.base/sun.security.util=ALL-UNNAMED");
-        jvm_args.push_back("--add-exports");
-        jvm_args.push_back("jdk.naming.dns/com.sun.jndi.dns=java.naming");
-
-        std::string module_path;
-        for (const auto& entry : classpath_entries) {
-            // Пропускаем ванильный клиент (1.21.jar) и нативы
-            if (entry.find("/1.21.jar") != std::string::npos) continue;
-            if (entry.find("\\1.21.jar") != std::string::npos) continue;
-            if (entry.find("natives") != std::string::npos) continue;
-
-            if (!module_path.empty()) module_path += CLASSPATH_SEP;
-            module_path += entry;
-        }
-
-        jvm_args.push_back("--module-path");
-        jvm_args.push_back(module_path);
-
-        jvm_args.push_back("--add-modules");
-        jvm_args.push_back("ALL-MODULE-PATH");
-    }
-    
+    // Читаем arguments.jvm из JSON (сюда попадут -p, --add-modules, --add-opens от NeoForge)
     append_profile_arguments("jvm", jvm_args);
 
     if (is_version_less(mcVersion, 1, 18, 1)) {
         jvm_args.push_back("-Dlog4j2.formatMsgNoLookups=true");
     }
 
-    {
-        fs::path mods_dir = mods_path;
-        if (fs::exists(mods_dir) && !fs::is_empty(mods_dir)) {
-            jvm_args.push_back("-Dfabric.addMods=" + mods_dir.string());
-            LOG_INFO("Mods directory mounted: " << mods_dir.string());
-        }
+    if ((isFabric || isQuilt) && fs::exists(mods_path) && !fs::is_empty(mods_path)) {
+        jvm_args.push_back("-Dfabric.addMods=" + mods_path.string());
+        LOG_INFO("Mods directory mounted: " << mods_path.string());
     }
 
     std::vector<std::string> game_args;
