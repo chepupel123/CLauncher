@@ -940,6 +940,20 @@ static bool launch_impl(const std::string& nickname_raw,
     jvm_args.push_back("-Dminecraft.launcher.brand=CLauncher");
     jvm_args.push_back("-Dminecraft.launcher.version=3.0");
     jvm_args.push_back("-Dfile.encoding=UTF-8");
+    
+    if (isForge || mainClass.find("bootstraplauncher") != std::string::npos) {
+        jvm_args.push_back("--add-opens");
+        jvm_args.push_back("java.base/java.lang.invoke=cpw.mods.securejarhandler");
+        jvm_args.push_back("--add-opens");
+        jvm_args.push_back("java.base/java.util.jar=cpw.mods.securejarhandler");
+        jvm_args.push_back("--add-exports");
+        jvm_args.push_back("java.base/sun.security.util=cpw.mods.securejarhandler");
+        jvm_args.push_back("--add-exports");
+        jvm_args.push_back("jdk.naming.dns/com.sun.jndi.dns=java.naming");
+        jvm_args.push_back("--add-modules");
+        jvm_args.push_back("ALL-MODULE-PATH");
+    }
+    
     append_profile_arguments("jvm", jvm_args);
 
     if (is_version_less(mcVersion, 1, 18, 1)) {
