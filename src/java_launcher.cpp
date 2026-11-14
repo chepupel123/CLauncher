@@ -17,6 +17,7 @@
 #include <cctype>
 #include <chrono>
 #include <thread>
+#include <unordered_set>
 #include <nlohmann/json.hpp>
 
 #ifdef _WIN32
@@ -758,6 +759,7 @@ static bool launch_impl(const std::string& nickname_raw,
 
     std::vector<std::string> classpath_entries;
     std::vector<std::string> missing_libs;
+    std::unordered_set<std::string> loaded_libs;
 
     auto add_libraries_from = [&](const json& prof) {
         if (prof.is_null() || !prof.contains("libraries")) return;
@@ -783,6 +785,10 @@ static bool launch_impl(const std::string& nickname_raw,
                     }
                 }
             }
+
+            // --- ФИКС: Дедупликация библиотек (чтобы не было SplitPackageException) ---
+            if (loaded_libs.find(lib_name) != loaded_libs.end()) continue;
+            loaded_libs.insert(lib_name);
 
             std::string group_path, artifact, lib_version, classifier;
             if (!parse_maven_name(lib_name, group_path, artifact, lib_version, classifier)) continue;
@@ -822,7 +828,9 @@ static bool launch_impl(const std::string& nickname_raw,
         add_libraries_from(profile);
     }
 
-    if (isForge) {
+    if (isNeoForge) {
+        LOG_INFO("Skipping vanilla JAR for NeoForge (handled by client-srg.jar)");
+    } else if (isForge) {
         const bool is_legacy_forge =
             mainClass.find("launchwrapper") != std::string::npos;
 
