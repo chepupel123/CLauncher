@@ -950,8 +950,21 @@ static bool launch_impl(const std::string& nickname_raw,
         jvm_args.push_back("java.base/sun.security.util=ALL-UNNAMED");
         jvm_args.push_back("--add-exports");
         jvm_args.push_back("jdk.naming.dns/com.sun.jndi.dns=java.naming");
+
+        std::string module_path;
+        for (const auto& entry : classpath_entries) {
+            // Пропускаем ванильный клиент (1.21.jar) и нативы
+            if (entry.find("/1.21.jar") != std::string::npos) continue;
+            if (entry.find("\\1.21.jar") != std::string::npos) continue;
+            if (entry.find("natives") != std::string::npos) continue;
+
+            if (!module_path.empty()) module_path += CLASSPATH_SEP;
+            module_path += entry;
+        }
+
         jvm_args.push_back("--module-path");
-        jvm_args.push_back(classpath);
+        jvm_args.push_back(module_path);
+
         jvm_args.push_back("--add-modules");
         jvm_args.push_back("ALL-MODULE-PATH");
     }
