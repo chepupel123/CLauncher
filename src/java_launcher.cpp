@@ -630,6 +630,7 @@ static bool launch_impl(const std::string& nickname_raw,
 
     bool isFabric = (version.find("fabric-loader-") == 0);
     bool isForge = (version.find("-forge-") != std::string::npos);
+    bool isQuilt = (version.find("quilt-loader-") == 0);
 
     json profile;
     bool main_class_from_profile = false;
