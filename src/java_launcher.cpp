@@ -949,7 +949,9 @@ static bool launch_impl(const std::string& nickname_raw,
         jvm_args.push_back("--add-exports");
         jvm_args.push_back("java.base/sun.security.util=ALL-UNNAMED");
         jvm_args.push_back("--add-exports");
-        jvm_args.push_back("jdk.naming.dns/com.sun.jndi.dns=java.naming");
+        jvm_args.push_back("jdk.naming.dns/com.sun.jndi.dns=java.naming")
+        jvm_args.push_back("--module-path");
+        jvm_args.push_back(classpath);
         jvm_args.push_back("--add-modules");
         jvm_args.push_back("ALL-MODULE-PATH");
     }
