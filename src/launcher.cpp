@@ -1,0 +1,1290 @@
+#include "launcher.h"
+#include "version_manager.h"
+#include "java_launcher.h"
+#include "MinecraftInstaller.h"
+#include "paths.h"
+#include "curl_tls.h"
+#include "logger.h"
+ 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+#include <GLFW/glfw3.h>
+#include <GL/gl.h>
+ 
+#include <nlohmann/json.hpp>
+ 
+#include <algorithm>
+#include <cctype>
+#include <cfloat>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <stdexcept>
+#include <utility>
+ 
+namespace fs = std::filesystem;
+using json = nlohmann::json;
+ 
+static const int RAM_OPTIONS[] = {512, 1024, 2048, 3072, 4096};
+static const int RAM_OPTIONS_COUNT = 5;
+
+static bool version_supports_fabric(const std::string& version) {
+    if (version.size() >= 4 && version[0] == '1' && version[1] == '.') {
+        size_t pos = 2;
+        int minor = 0;
+        while (pos < version.size() && std::isdigit((unsigned char)version[pos])) {
+            minor = minor * 10 + (version[pos] - '0');
+            ++pos;
+        }
+        return minor >= 14;
+    }
+    return version.rfind("26.", 0) == 0;
+}
+
+static bool version_supports_forge(const std::string& version) {
+    if (version.size() >= 2 && version[0] == '1' && version[1] == '.') return true;
+    if (version.rfind("26.", 0) == 0) return true;
+    return false;
+}
+static bool version_supports_quilt(const std::string& version) {
+    if (version.rfind("26.", 0) == 0) return true;
+    
+    int major = 0, minor = 0, patch = -1;
+    if (std::sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch) >= 2) {
+        if (major != 1) return false;
+        if (minor > 14) return true; 
+        if (minor == 14) {
+            if (patch == -1) return false;
+            return patch >= 4;
+        }
+    }
+    return false;
+}
+
+static bool version_supports_neoforge(const std::string& version) {
+    if (version.rfind("1.20.", 0) == 0) return true;
+    if (version == "1.21" || version.rfind("1.21.", 0) == 0) return true;
+    if (version.rfind("26.", 0) == 0) return true;
+    return false;
+}
+ 
+static bool nickname_char_ok(unsigned int c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+ 
+static std::string sanitize_nickname(const std::string& in) {
+    std::string out;
+    size_t i = 0;
+    while (i < in.size()) {
+        unsigned char b = static_cast<unsigned char>(in[i]);
+        size_t len = (b < 0x80) ? 1 : (b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4;
+        if (b < 0x80 && nickname_char_ok(b)) out += in[i];
+        i += len;
+    }
+    return out;
+}
+ 
+static std::string sfmt(const std::string& tmpl, const std::string& arg) {
+    auto p = tmpl.find("%s");
+    if (p == std::string::npos) return tmpl;
+    return tmpl.substr(0, p) + arg + tmpl.substr(p + 2);
+}
+
+// Шестерёнка для кнопки настроек. Рисуется вручную, чтобы не зависеть от
+// наличия Unicode-глифа U+2699 в системном шрифте (на Windows его может не быть).
+static void draw_gear_icon(ImVec2 center, float radius, ImU32 color) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (int i = 0; i < 8; ++i) {
+        const float angle = static_cast<float>(i) * (2.0f * 3.14159265358979f / 8.0f);
+        const ImVec2 dir(std::cos(angle), std::sin(angle));
+        const ImVec2 p0(center.x + dir.x * radius * 0.85f,
+                        center.y + dir.y * radius * 0.85f);
+        const ImVec2 p1(center.x + dir.x * radius * 1.35f,
+                        center.y + dir.y * radius * 1.35f);
+        dl->AddLine(p0, p1, color, radius * 0.45f);
+    }
+    dl->AddCircle(center, radius, color, 24, radius * 0.30f);
+}
+
+// ── Адаптивная раскладка ────────────────────────────────────────────────────
+// Все размеры считаются от доступной ширины строки, чтобы UI подстраивался
+// под окно, язык и шрифт, а не под жёстко заданные пиксели.
+
+// Ширина одного элемента в ряду из `count` равных элементов.
+static float row_item_width(int count) {
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    if (count <= 1) return avail;
+    return (avail - spacing * static_cast<float>(count - 1)) / static_cast<float>(count);
+}
+
+// Ширина контрола в строке, где справа от него стоит подпись `right_label`
+// (плюс `reserved` пикселей на дополнительные кнопки той же строки).
+static float control_width(const char* right_label, float reserved = 0.0f) {
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float label_w = ImGui::CalcTextSize(right_label).x;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    return std::max(72.0f, avail - label_w - st.ItemSpacing.x - reserved);
+}
+
+// Высота радиокнопки/чекбокса для расчёта переноса строк.
+static float radio_item_width(const char* label) {
+    const ImGuiStyle& st = ImGui::GetStyle();
+    return ImGui::GetFrameHeight() + st.ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
+}
+ 
+static const L10n& l10n_en() {
+    static const L10n L{
+                "CLauncher", "Language", "Nickname", "Version", "Mod Loader:",
+            "Performance mods: Sodium + Lithium + FerriteCore",
+        "Sodium — render FPS, Lithium — game logic/ticks,\nFerriteCore — memory usage.\nVersions are picked automatically for the selected Minecraft version.",
+             "Mods require the Fabric loader (select it above)",
+         "Vanilla Minecraft cannot load mods.\nSwitch Mod Loader to Fabric to enable mods.",
+              "My Mods", "Mods folder for this Fabric version.\nDrop your .jar files here — they load on launch.\nEach Minecraft version has its own folder — no mod conflicts.",
+         "Fabric for %s is not installed yet — press Play first", "Resource Packs",
+                 "Shared resource packs folder (~/.minecraft/resourcepacks).\nDownload a resource pack .zip and put it here —\nit will appear in the in-game resource pack list.",
+          "Memory allocation:", "Selected: %d MB", "Play", "Report bug on Discord", "Ready", "Preparing...",
+           "Installing Vanilla %s...", "Installing Fabric for %s...", "Fabric installed: %s",
+               "Installation failed: %s", "Installing Sodium / Lithium / FerriteCore...",
+                  "Mods failed (see terminal), launching without them", "Launching %s...",
+         "Game launched!", "Launch failed! Check the terminal.",
+          "TTF font not found - Russian UI would show question marks (staying English)",
+         "Invalid characters removed (A-Z, a-z, 0-9, _ only)",
+         "Failed to load versions. Check your internet connection.",
+         "The version list is empty. Click Reload to retry.\nIf the problem persists, see clauncher.log.\nOn Windows, make sure cacert.pem is next to the .exe.",
+         "Reload", "Loading versions...", "(%.2f MB/s)", "— %d:%02d left", "checking...",
+         "Settings", "Close",
+    };
+    return L;
+}
+ 
+static const L10n& l10n_ru() {
+    static const L10n L{
+                "CЛаунчер", "Язык", "Никнейм", "Версия", "Загрузчик модов:",
+            "Оптимизация: Sodium + Lithium + FerriteCore",
+        "Sodium — FPS рендера, Lithium — игровая логика/тики,\nFerriteCore — потребление памяти.\nВерсии подбираются автоматически под выбранную версию Minecraft.",
+             "Моды требуют загрузчик Fabric (выберите выше)",
+         "Ванильный Minecraft не умеет загружать моды.\nПереключите Mod Loader на Fabric.",
+              "Мои моды", "Папка модов этой Fabric-версии.\nКидайте сюда свои .jar — они загрузятся при запуске.\nУ каждой версии своя папка — моды не конфликтуют.",
+         "Fabric для %s ещё не установлена — сначала нажмите Play", "Ресурспаки",
+                 "Общая папка ресурспаков (~/.minecraft/resourcepacks).\nСкачайте .zip ресурспака и положите сюда —\nон появится в списке в настройках игры.",
+          "Выделение памяти:", "Выбрано: %d МБ", "Играть", "Сообщить об ошибке в Discord", "Готов к запуску", "Подготовка...",
+           "Установка Vanilla %s...", "Установка Fabric для %s...", "Fabric установлена: %s",
+               "Ошибка установки: %s", "Установка Sodium / Lithium / FerriteCore...",
+                  "Моды не установились (см. терминал), запускаю без них", "Запуск %s...",
+         "Игра запущена!", "Ошибка запуска! Проверьте терминал.",
+          "Не найден TTF-шрифт — русский интерфейс покажет вопросики (остаюсь на английском)",
+         "Убраны недопустимые символы (только A-Z, a-z, 0-9, _)",
+         "Не удалось загрузить список версий. Проверьте подключение к интернету.",
+         "Список версий пуст. Нажмите Reload, чтобы повторить.\nЕсли проблема повторяется — смотрите clauncher.log.\nНа Windows убедитесь, что cacert.pem лежит рядом с .exe.",
+         "Обновить", "Загрузка версий...", "(%.2f МБ/с)", "— осталось %d:%02d", "проверка...",
+         "Настройки", "Закрыть",
+    };
+    return L;
+}
+ 
+static Launcher* g_active_launcher = nullptr;
+ 
+static const char* ru_stage(const char* stage) {
+    static const std::map<std::string, const char*> M = {
+        {"Version metadata...", "Метаданные версии..."},
+        {"Downloading client...", "Скачивание клиента..."},
+        {"Libraries", "Библиотеки"},
+        {"Assets", "Ассеты"},
+        {"Mods", "Моды"},
+        {"Natives...", "Нативные библиотеки..."},
+        {"Done", "Готово"},
+        {"Installing Fabric...", "Установка Fabric..."},
+        {"Fabric installed", "Fabric установлена"},
+        {"Installing Quilt...", "Установка Quilt..."},
+        {"Quilt installed", "Quilt установлен"},
+        {"Installing NeoForge...", "Установка NeoForge..."},
+        {"NeoForge installed", "NeoForge установлен"},
+    };
+    auto it = M.find(stage);
+    return it != M.end() ? it->second : stage;
+}
+ 
+static void installer_progress_cb(size_t bytes_done, size_t bytes_total,
+                                  const char* stage, void* ) {
+    if (!g_active_launcher) return;
+    const char* s = (g_active_launcher->ui_lang() == UiLang::Ru) ? ru_stage(stage) : stage;
+    float pr;
+    if (bytes_total > 0)
+        pr = MinecraftInstaller::bar_percent(bytes_done, bytes_total) / 100.f;
+    else
+        pr = static_cast<float>(bytes_done) / 100.f;
+    g_active_launcher->set_status(s, pr);
+}
+ 
+Launcher::Launcher() {
+    glfwSetErrorCallback([](int err, const char* desc) {
+        LOG_ERROR("GLFW error " << err << ": " << desc);
+    });
+ 
+    if (!glfwInit()) {
+        throw std::runtime_error("GLFW init failed");
+    }
+}
+ 
+Launcher::~Launcher() {
+    MinecraftInstaller::request_cancel();
+    if (reload_thread_.joinable()) reload_thread_.join();
+    if (worker_.joinable()) worker_.join();
+ 
+    if (window_) {
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        glfwDestroyWindow(window_);
+    }
+    glfwTerminate();
+}
+ 
+void Launcher::init() {
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
+    window_ = glfwCreateWindow(700, 550, "CLauncher 1.0.3", nullptr, nullptr);
+    if (!window_) throw std::runtime_error("GLFW window creation failed");
+    // Нижняя граница — чтобы элементы не наезжали друг на друга; сверху
+    // ограничений нет, высота подстраивается под содержимое по мере
+    // реального изменения контента (см. draw_ui()).
+    glfwSetWindowSizeLimits(window_, 480, 380, GLFW_DONT_CARE, GLFW_DONT_CARE);
+ 
+    glfwMakeContextCurrent(window_);
+    glfwSwapInterval(1);
+ 
+    setup_imgui();
+    load_settings();
+ 
+    LOG_INFO("Initializing version manager...");
+    std::error_code ec;
+    fs::create_directories(launcher_paths::launcher_dir(), ec);
+    release_versions_ = VersionManager::get_release_versions();
+    const bool refreshManifest =
+        release_versions_.empty() || !VersionManager::is_manifest_cache_fresh();
+ 
+    if (!release_versions_.empty()) {
+        if (config_.selected_version.empty() ||
+            std::find(release_versions_.begin(), release_versions_.end(),
+                      config_.selected_version) == release_versions_.end()) {
+            config_.selected_version = release_versions_[0];
+        }
+        if (version_supports_fabric(config_.selected_version)) {
+            config_.mod_loader = preferred_mod_loader_;
+        } else {
+            config_.mod_loader = ModLoader::Vanilla;
+        }
+    } else {
+        LOG_WARN("No cached release versions; loading manifest in background");
+    }
+ 
+    config_.memory_mb = RAM_OPTIONS[memory_index_];
+    if (refreshManifest) {
+        reload_versions();
+    } else {
+        LOG_INFO("Manifest cache is fresh, skipping download");
+        set_status(tr().ready, 0.0f);
+    }
+
+    instance_manager_.load_all(launcher_paths::instances_dir());
+    Instance* inst = instance_manager_.get_selected();
+    if (!inst) {
+        std::string seed_v = config_.selected_version.empty() ? "1.20.1" : config_.selected_version;
+        inst = instance_manager_.create("default", seed_v, seed_v, config_.mod_loader);
+        if (inst) {
+            inst->memory_mb = RAM_OPTIONS[memory_index_];
+            inst->nickname = nickname_buf_;
+            inst->save();
+        }
+    }
+    if (inst) {
+        config_.selected_version = inst->mc_version;
+        config_.mod_loader = inst->mod_loader;
+        config_.memory_mb = inst->memory_mb;
+    }
+}
+ 
+void Launcher::setup_imgui() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+ 
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding = ImVec2(12, 12);
+    style.FramePadding = ImVec2(8, 6);
+    style.ItemSpacing = ImVec2(8, 8);
+    style.WindowRounding = 0.0f;
+    style.FrameRounding = 0.0f;
+ 
+    ImFont* font = nullptr;
+    static const char* kFontCandidates[] = {
+#ifdef _WIN32
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+#else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+#endif
+    };
+    for (const char* path : kFontCandidates) {
+        if (FILE* f = fopen(path, "rb")) {
+            fclose(f);
+            font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr,
+                                                io.Fonts->GetGlyphRangesCyrillic());
+            if (font) {
+                LOG_INFO("UI font loaded: " << path);
+                break;
+            }
+        }
+    }
+    if (!font) {
+        io.Fonts->AddFontDefault();
+        LOG_WARN(l10n_ru().font_warning);
+    }
+ 
+    ImGui_ImplGlfw_InitForOpenGL(window_, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+}
+ 
+void Launcher::render() {
+    glfwPollEvents();
+
+    if (hide_window_requested_.exchange(false)) {
+        glfwHideWindow(window_);
+    }
+    if (show_window_requested_.exchange(false)) {
+        glfwShowWindow(window_);
+        glfwFocusWindow(window_);
+    }
+
+    if (glfwWindowShouldClose(window_)) {
+        should_close_ = true;
+        return;
+    }
+
+    if (!glfwGetWindowAttrib(window_, GLFW_VISIBLE)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+
+    if (reload_ready_.exchange(false)) {
+        std::vector<std::string> fetched;
+        bool failed = false;
+        {
+            std::lock_guard<std::mutex> lk(status_mutex_);
+            fetched = std::move(versions_pending_);
+            versions_pending_.clear();
+            failed = versions_reload_failed_.load();
+        }
+        if (failed) {
+            LOG_ERROR("Reload finished with no versions available");
+        } else {
+            release_versions_ = std::move(fetched);
+            if (!release_versions_.empty() &&
+                (config_.selected_version.empty() ||
+                 std::find(release_versions_.begin(), release_versions_.end(),
+                           config_.selected_version) == release_versions_.end())) {
+                config_.selected_version = release_versions_[0];
+            }
+            LOG_INFO("Reload complete: " << release_versions_.size() << " versions");
+        }
+        set_status(tr().ready, 0.0f);
+        reload_requested_ = false;
+    }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+ 
+    draw_ui();
+ 
+    ImGui::Render();
+    int display_w, display_h;
+    glfwGetFramebufferSize(window_, &display_w, &display_h);
+    glViewport(0, 0, display_w, display_h);
+    glClearColor(
+        ((clear_color_ >> 0) & 0xFF) / 255.f,
+        ((clear_color_ >> 8) & 0xFF) / 255.f,
+        ((clear_color_ >> 16) & 0xFF) / 255.f,
+        1.f
+    );
+    glClear(GL_COLOR_BUFFER_BIT);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    glfwSwapBuffers(window_);
+}
+ 
+void Launcher::set_status(const std::string& text, float new_progress) {
+    std::lock_guard<std::mutex> lk(status_mutex_);
+    status_text = text;
+    this->progress = new_progress;
+}
+
+double Launcher::download_speed_mbps() const {
+    return MinecraftInstaller::g_download_speed_mbps.load(std::memory_order_relaxed);
+}
+
+int Launcher::download_eta_seconds() const {
+    return MinecraftInstaller::g_download_eta_seconds.load(std::memory_order_relaxed);
+}
+
+bool Launcher::download_checking() const {
+    return MinecraftInstaller::g_download_checking.load(std::memory_order_relaxed);
+}
+ 
+const L10n& Launcher::tr() const {
+    return lang_ == UiLang::Ru ? l10n_ru() : l10n_en();
+}
+ 
+static fs::path settings_path() {
+    return launcher_paths::launcher_dir() / "launcher_settings.json";
+}
+ 
+bool Launcher::load_settings() {
+    try {
+        fs::path p = settings_path();
+        if (!fs::exists(p)) return false;
+        json j;
+        std::ifstream f(p);
+        f >> j;
+ 
+        if (j.value("lang", "en") == "ru") lang_ = UiLang::Ru;
+        std::string nick = j.value("nickname", std::string("Steve"));
+ 
+        std::string clean = sanitize_nickname(nick);
+        if (clean != nick) {
+            LOG_INFO("Settings: nickname sanitized '" << nick
+                     << "' -> '" << clean << "'");
+            if (clean.empty()) clean = "Steve";
+        }
+        std::snprintf(nickname_buf_, sizeof(nickname_buf_), "%s", clean.c_str());
+        memory_index_ = std::clamp(j.value("memory_index", 1), 0, RAM_OPTIONS_COUNT - 1);
+        config_.selected_version = j.value("selected_version", std::string());
+        const int saved_loader = j.value("mod_loader", 0);
+        if (saved_loader == static_cast<int>(ModLoader::Fabric) ||
+            saved_loader == static_cast<int>(ModLoader::NeoForge) ||
+            saved_loader == static_cast<int>(ModLoader::Quilt))
+            preferred_mod_loader_ = static_cast<ModLoader>(saved_loader);
+        config_.memory_mb = RAM_OPTIONS[memory_index_];
+        LOG_INFO("Settings loaded: lang=" << j.value("lang", "en")
+                 << ", nickname=" << nickname_buf_);
+        if (clean != nick) save_settings();
+        return true;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Settings load failed: " << e.what());
+        return false;
+    }
+}
+
+void Launcher::reload_versions() {
+    if (reload_requested_) return;
+    reload_requested_ = true;
+    reload_ready_ = false;
+    set_status(tr().loading_versions, 0.0f);
+    LOG_INFO("Manual manifest reload requested");
+
+    const std::string ready_text = tr().ready;
+
+    if (reload_thread_.joinable()) reload_thread_.join();
+    reload_thread_ = std::thread([this, ready_text] {
+        std::vector<std::string> fetched;
+        bool ok = false;
+        try {
+            ok = VersionManager::fetch_and_cache_manifest();
+            fetched = VersionManager::get_release_versions();
+        } catch (const std::exception& e) {
+            LOG_ERROR("Reload failed: " << e.what());
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(status_mutex_);
+            versions_pending_ = std::move(fetched);
+            versions_reload_failed_ = !ok || versions_pending_.empty();
+            reload_ready_ = true;
+        }
+        set_status(ready_text, 0.0f);
+    });
+}
+ 
+void Launcher::save_settings() const {
+    try {
+        json j;
+        j["lang"] = (lang_ == UiLang::Ru) ? "ru" : "en";
+        j["nickname"] = std::string(nickname_buf_);
+        j["memory_index"] = memory_index_;
+        j["selected_version"] = config_.selected_version;
+        j["mod_loader"]       = static_cast<int>(preferred_mod_loader_);
+        fs::create_directories(settings_path().parent_path());
+        std::ofstream f(settings_path());
+        f << j.dump(2);
+    } catch (const std::exception& e) {
+        LOG_ERROR("Settings save failed: " << e.what());
+    }
+}
+ 
+void Launcher::draw_ui() {
+    const L10n& L = tr();
+ 
+    // Главное окно занимает всю клиентскую область GLFW-окна: раскладка ниже
+    // каждый кадр пересчитывает размеры от доступного места.
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize, ImGuiCond_Always);
+
+    ImGui::Begin("##launcher_main", nullptr,
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoTitleBar);
+
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const bool window_maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED) != 0;
+
+    // Заголовок и шестерёнка: кнопка прижата к правому краю по реальному
+    // отступу окна, без магических констант.
+    const float gear_size = ImGui::GetFrameHeight();
+    ImGui::Text("%s", L.title.c_str());
+    ImGui::SameLine(ImGui::GetWindowWidth() - st.WindowPadding.x - gear_size);
+    const ImVec2 gear_pos = ImGui::GetCursorScreenPos();
+    const ImVec2 gear_btn(gear_size, gear_size);
+    if (ImGui::InvisibleButton("##open_settings", gear_btn))
+        ImGui::OpenPopup("##settings");
+    const bool gear_hovered = ImGui::IsItemHovered();
+    if (gear_hovered) {
+        ImGui::SetTooltip("%s", L.settings.c_str());
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            gear_pos, ImVec2(gear_pos.x + gear_btn.x, gear_pos.y + gear_btn.y),
+            ImGui::GetColorU32(ImGuiCol_ButtonHovered), 4.0f);
+    }
+    draw_gear_icon(ImVec2(gear_pos.x + gear_btn.x * 0.5f,
+                          gear_pos.y + gear_btn.y * 0.5f),
+                   gear_size * 0.30f,
+                   ImGui::GetColorU32(ImGuiCol_Text));
+
+    float settings_h = 0.0f;
+    if (ImGui::IsPopupOpen("##settings")) {
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(
+            ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f),
+            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        // Ширина модалки — производная от окна, а не жёсткие 480 px.
+        const float max_w = std::min(560.0f, vp->Size.x * 0.9f);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(360.0f, max_w), 0.0f),
+                                            ImVec2(max_w, FLT_MAX));
+    }
+    if (ImGui::BeginPopupModal("##settings", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize |
+                               ImGuiWindowFlags_NoTitleBar)) {
+        ImGui::TextUnformatted(L.settings.c_str());
+        ImGui::Separator();
+
+        ImGui::TextUnformatted(L.language.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const char* langs[] = {"English", "Русский"};
+        int cur_lang = static_cast<int>(lang_.load());
+        if (ImGui::Combo("##lang", &cur_lang, langs, IM_ARRAYSIZE(langs))) {
+            lang_ = static_cast<UiLang>(cur_lang);
+            save_settings();
+            set_status(tr().ready, 0.0f);
+        }
+
+        ImGui::Spacing();
+        ImGui::TextUnformatted(L.memory_alloc.c_str());
+        // Радиокнопки переносятся по строкам сами, если не помещаются.
+        static const char* kRamText[RAM_OPTIONS_COUNT] = {
+            "512 MB", "1024 MB", "2048 MB", "3072 MB", "4096 MB"};
+        const float ram_avail = ImGui::GetContentRegionAvail().x;
+        float ram_used = 0.0f;
+        for (int i = 0; i < RAM_OPTIONS_COUNT; ++i) {
+            char id[32];
+            std::snprintf(id, sizeof(id), "%s##ram%d", kRamText[i], i);
+            const float w = radio_item_width(kRamText[i]);
+            if (ram_used > 0.0f) {
+                if (ram_used + st.ItemSpacing.x + w <= ram_avail) {
+                    ImGui::SameLine();
+                    ram_used += st.ItemSpacing.x;
+                } else {
+                    ram_used = 0.0f;
+                }
+            }
+            ImGui::RadioButton(id, &memory_index_, i);
+            ram_used += w;
+        }
+        {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), L.selected_mb_fmt.c_str(),
+                          RAM_OPTIONS[memory_index_]);
+            ImGui::TextUnformatted(buf);
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (ImGui::Button(L.discord.c_str(), ImVec2(-FLT_MIN, 0))) {
+            JavaLauncher::open_url(config_.discord_url);
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button(L.close.c_str(), ImVec2(-FLT_MIN, 0)))
+            ImGui::CloseCurrentPopup();
+        // Реальная высота содержимого модалки — чтобы окно лаунчера могло
+        // подрасти и показать её целиком без скролла.
+        settings_h = ImGui::GetCursorPosY() + st.WindowPadding.y;
+        ImGui::EndPopup();
+    }
+    ImGui::Separator();
+
+    config_.memory_mb = RAM_OPTIONS[memory_index_];
+
+    Instance* cur_inst = instance_manager_.get_selected();
+    std::string cur_name = cur_inst ? cur_inst->name : "—";
+    const float small_btn_w = ImGui::GetFrameHeight() * 1.6f;
+    const float inst_reserved = 2.0f * (small_btn_w + st.ItemSpacing.x) + 12.0f;
+    ImGui::SetNextItemWidth(control_width("Instance", inst_reserved));
+    if (ImGui::BeginCombo("##instance_combo", cur_name.c_str())) {
+        for (const auto& up : instance_manager_.all()) {
+            bool sel = (cur_inst == up.get());
+            if (ImGui::Selectable(up->name.c_str(), sel)) {
+                instance_manager_.set_selected(up.get());
+                config_.selected_version = up->mc_version;
+                config_.mod_loader = up->mod_loader;
+                config_.memory_mb = up->memory_mb;
+                for (int i = 0; i < RAM_OPTIONS_COUNT; ++i)
+                    if (RAM_OPTIONS[i] == up->memory_mb) { memory_index_ = i; break; }
+                save_settings();
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImVec2 btn_size(small_btn_w, 0);
+    ImGui::SameLine();
+    if (ImGui::Button("+", btn_size)) {
+        std::snprintf(instance_name_buf_, sizeof(instance_name_buf_), "New Instance");
+        ImGui::OpenPopup("Create Instance");
+    }
+
+    if (ImGui::BeginPopupModal("Create Instance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Enter a name for the new instance:");
+        ImGui::InputText("##inst_name", instance_name_buf_, sizeof(instance_name_buf_));
+
+        std::string new_name(instance_name_buf_);
+        bool invalid_chars = (new_name.find_first_of("\\/:*?\"<>|") != std::string::npos || new_name == "." || new_name == "..");
+        bool is_empty = new_name.empty();
+        bool exists = (instance_manager_.find(new_name) != nullptr);
+
+        if (is_empty) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Name cannot be empty");
+        } else if (invalid_chars) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Name contains invalid characters (\\ / : * ? \" < > |)");
+        } else if (exists) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Instance with this name already exists");
+        }
+
+        ImGui::Separator();
+
+        bool can_create = !is_empty && !invalid_chars && !exists;
+        if (!can_create) ImGui::BeginDisabled();
+
+        if (ImGui::Button("Create", ImVec2(120, 0))) {
+            std::string seed_v = config_.selected_version.empty() ? "1.20.1" : config_.selected_version;
+            Instance* ni = instance_manager_.create(new_name, seed_v, seed_v, config_.mod_loader);
+            if (ni) {
+                ni->memory_mb = config_.memory_mb;
+                ni->nickname = nickname_buf_;
+                ni->save();
+
+                instance_manager_.set_selected(ni);
+                config_.selected_version = ni->mc_version;
+                config_.mod_loader = ni->mod_loader;
+                config_.memory_mb = ni->memory_mb;
+
+                for (int i = 0; i < RAM_OPTIONS_COUNT; ++i)
+                    if (RAM_OPTIONS[i] == ni->memory_mb) { memory_index_ = i; break; }
+
+                save_settings();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (!can_create) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    bool can_delete = (cur_inst != nullptr) && (instance_manager_.all().size() > 1) && !is_working;
+    if (!can_delete) ImGui::BeginDisabled();
+    if (ImGui::Button("-", btn_size)) ImGui::OpenPopup("Delete Instance");
+    if (!can_delete) ImGui::EndDisabled();
+
+    if (ImGui::BeginPopupModal("Delete Instance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (cur_inst) {
+            ImGui::Text("Are you sure you want to delete instance '%s'?", cur_inst->name.c_str());
+
+            static bool permanent_delete = false;
+            ImGui::Checkbox("Delete permanently (skip trash)", &permanent_delete);
+
+            if (!permanent_delete) {
+                ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Instance will be moved to ~/.clauncher/trash/");
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "WARNING: All mods and saves will be permanently deleted!");
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Yes, Delete", ImVec2(120, 0))) {
+                instance_manager_.remove(cur_inst->name, permanent_delete);
+                permanent_delete = false;
+
+                Instance* next_inst = instance_manager_.get_selected();
+                if (next_inst) {
+                    config_.selected_version = next_inst->mc_version;
+                    config_.mod_loader = next_inst->mod_loader;
+                    config_.memory_mb = next_inst->memory_mb;
+                    for (int i = 0; i < RAM_OPTIONS_COUNT; ++i)
+                        if (RAM_OPTIONS[i] == next_inst->memory_mb) { memory_index_ = i; break; }
+                }
+                save_settings();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                permanent_delete = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine(0, 12);
+    ImGui::Text("Instance");
+ 
+    auto nick_filter = [](ImGuiInputTextCallbackData* data) -> int {
+        ImWchar c = data->EventChar;
+        if (c > 127) return 1;
+        if (!nickname_char_ok(static_cast<unsigned char>(c))) return 1;
+        return 0;
+    };
+    ImGui::SetNextItemWidth(control_width(L.nickname.c_str()));
+    ImGui::InputText("##nickname", nickname_buf_, sizeof(nickname_buf_),
+                     ImGuiInputTextFlags_CallbackCharFilter, nick_filter, nullptr);
+    if (ImGui::IsItemEdited()) {
+        std::string clean = sanitize_nickname(nickname_buf_);
+        if (clean != nickname_buf_) {
+            std::snprintf(nickname_buf_, sizeof(nickname_buf_), "%s", clean.c_str());
+            ++invalid_nick_drops_;
+        }
+    }
+    ImGui::SameLine();
+    ImGui::Text("%s", L.nickname.c_str());
+ 
+    if (!release_versions_.empty()) {
+        ImGui::SetNextItemWidth(control_width(L.version.c_str()));
+        if (ImGui::BeginCombo("##version_combo", config_.selected_version.c_str())) {
+            for (const auto& ver : release_versions_) {
+                bool is_selected = (ver == config_.selected_version);
+                if (ImGui::Selectable(ver.c_str(), is_selected)) {
+                    config_.selected_version = ver;
+                    if (version_supports_fabric(ver)) {
+                        config_.mod_loader = preferred_mod_loader_;
+                    } else {
+                        config_.mod_loader = ModLoader::Vanilla;
+                    }
+                    save_settings();
+                }
+                if (is_selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s", L.version.c_str());
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.60f, 0.16f, 0.16f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 0.26f, 0.26f, 1.0f));
+        ImGui::Button(L.reload.c_str(), ImVec2(control_width(L.version.c_str()), 0));
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemClicked()) {
+            reload_versions();
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s", L.version.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.32f, 0.32f, 1.0f));
+        ImGui::TextWrapped("%s", L.versions_failed.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.versions_failed_tip.c_str());
+    }
+ 
+    ImGui::Spacing();
+ 
+    ImGui::Text("%s", L.mod_loader.c_str());
+
+    const bool fabric_ok = version_supports_fabric(config_.selected_version);
+    const bool forge_ok = version_supports_forge(config_.selected_version);
+    const bool quilt_ok = version_supports_quilt(config_.selected_version);
+    const bool neoforge_ok = version_supports_neoforge(config_.selected_version);
+    const bool any_loader_ok = fabric_ok || forge_ok || quilt_ok || neoforge_ok;
+
+    if (config_.mod_loader == ModLoader::Fabric && !fabric_ok)
+        config_.mod_loader = ModLoader::Vanilla;
+    if (config_.mod_loader == ModLoader::Forge && !forge_ok)
+        config_.mod_loader = ModLoader::Vanilla;
+    if (config_.mod_loader == ModLoader::Quilt && !quilt_ok)
+        config_.mod_loader = ModLoader::Vanilla;
+    if (config_.mod_loader == ModLoader::NeoForge && !neoforge_ok)
+        config_.mod_loader = ModLoader::Vanilla;
+
+    if (any_loader_ok) {
+        const char* loader_label = "Vanilla";
+        if (config_.mod_loader == ModLoader::Fabric) loader_label = "Fabric";
+        else if (config_.mod_loader == ModLoader::Forge) loader_label = "Forge";
+        else if (config_.mod_loader == ModLoader::Quilt) loader_label = "Quilt";
+        else if (config_.mod_loader == ModLoader::NeoForge) loader_label = "NeoForge";
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##loader_combo", loader_label)) {
+            if (ImGui::Selectable("Vanilla", config_.mod_loader == ModLoader::Vanilla)) {
+                config_.mod_loader = ModLoader::Vanilla;
+                preferred_mod_loader_ = ModLoader::Vanilla;
+                save_settings();
+            }
+            if (config_.mod_loader == ModLoader::Vanilla) ImGui::SetItemDefaultFocus();
+
+            if (fabric_ok) {
+                if (ImGui::Selectable("Fabric", config_.mod_loader == ModLoader::Fabric)) {
+                    config_.mod_loader = ModLoader::Fabric;
+                    preferred_mod_loader_ = ModLoader::Fabric;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::Fabric) ImGui::SetItemDefaultFocus();
+            }
+
+            if (forge_ok) {
+                if (ImGui::Selectable("Forge", config_.mod_loader == ModLoader::Forge)) {
+                    config_.mod_loader = ModLoader::Forge;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::Forge) ImGui::SetItemDefaultFocus();
+            }
+
+            if (quilt_ok) {
+                if (ImGui::Selectable("Quilt", config_.mod_loader == ModLoader::Quilt)) {
+                    config_.mod_loader = ModLoader::Quilt;
+                    preferred_mod_loader_ = ModLoader::Quilt;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::Quilt) ImGui::SetItemDefaultFocus();
+            }
+
+            if (neoforge_ok) {
+                if (ImGui::Selectable("NeoForge", config_.mod_loader == ModLoader::NeoForge)) {
+                    config_.mod_loader = ModLoader::NeoForge;
+                    preferred_mod_loader_ = ModLoader::NeoForge;
+                    save_settings();
+                }
+                if (config_.mod_loader == ModLoader::NeoForge) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    } else {
+        ImGui::Text("Vanilla");
+    }
+    ImGui::Spacing();
+ 
+    if (fabric_ok && config_.mod_loader == ModLoader::Fabric &&
+        MinecraftInstaller::supportsPerformanceMods(config_.selected_version)) {
+        ImGui::Checkbox(L.perf_mods.c_str(), &perf_mods_checked_);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.perf_mods_tip.c_str());
+    }
+ 
+    if (!is_working) {
+        auto open_mods_dir = [&]() {
+            std::string fabric_dir;
+            if (config_.mod_loader == ModLoader::Fabric) {
+                fabric_dir = MinecraftInstaller::findFabricDir(config_.selected_version);
+                if (fabric_dir.empty()) {
+                    LOG_WARN("[My Mods] Fabric is not installed for " << config_.selected_version);
+                    set_status(sfmt(L.fabric_not_installed, config_.selected_version), 0.0f);
+                    return;
+                }
+            }
+            fs::path mods = instance_manager_.get_selected()
+                                ? instance_manager_.get_selected()->mods_dir()
+                                : launcher_paths::minecraft_dir() / "mods";
+            std::error_code ec;
+            fs::create_directories(mods, ec);
+            const auto mods_u8 = mods.u8string();
+            const std::string mods_path_utf8(reinterpret_cast<const char*>(mods_u8.data()),
+                                             mods_u8.size());
+            JavaLauncher::open_url(mods_path_utf8);
+        };
+        auto open_resource_packs = [&]() {
+            fs::path rp = instance_manager_.get_selected()
+                              ? instance_manager_.get_selected()->resource_packs_dir()
+                              : launcher_paths::minecraft_dir() / "resourcepacks";
+            std::error_code ec;
+            fs::create_directories(rp, ec);
+            const auto rp_u8 = rp.u8string();
+            const std::string rp_path_utf8(reinterpret_cast<const char*>(rp_u8.data()),
+                                           rp_u8.size());
+            JavaLauncher::open_url(rp_path_utf8);
+        };
+
+        const bool has_mods_button = (config_.mod_loader == ModLoader::Fabric ||
+                                      config_.mod_loader == ModLoader::Forge ||
+                                      config_.mod_loader == ModLoader::Quilt ||
+                                      config_.mod_loader == ModLoader::NeoForge);
+        if (has_mods_button) {
+            // Две кнопки делят строку поровну при любой ширине окна.
+            const float half = row_item_width(2);
+            if (ImGui::Button(L.my_mods.c_str(), ImVec2(half, 0))) open_mods_dir();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.my_mods_tip.c_str());
+            ImGui::SameLine();
+            if (ImGui::Button(L.resource_packs.c_str(), ImVec2(half, 0))) open_resource_packs();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.rp_tip.c_str());
+        } else if (fabric_ok) {
+            ImGui::TextDisabled("%s", L.mods_need_fabric.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.mods_need_fabric_tip.c_str());
+            if (ImGui::Button(L.resource_packs.c_str(), ImVec2(-FLT_MIN, 0)))
+                open_resource_packs();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.rp_tip.c_str());
+        } else {
+            if (ImGui::Button(L.resource_packs.c_str(), ImVec2(-FLT_MIN, 0)))
+                open_resource_packs();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L.rp_tip.c_str());
+        }
+    }
+ 
+    // ── Футер ───────────────────────────────────────────────────────────────
+    // В обычном окне высота подгоняется под содержимое (см. ниже), поэтому
+    // футер идёт сразу за контентом. В развёрнутом окне он прижимается к низу.
+    {
+        std::string status_line;
+        float pr = 0.0f;
+        {
+            std::lock_guard<std::mutex> lk(status_mutex_);
+            status_line = status_text;
+            pr = progress;
+        }
+
+        const float play_h = ImGui::GetFrameHeight() * 1.5f;
+        const float avail_w = ImGui::GetContentRegionAvail().x;
+
+        if (window_maximized) {
+            float body_h = 0.0f;
+            if (is_working) {
+                body_h = ImGui::GetTextLineHeight() + st.ItemSpacing.y + 20.0f;
+            } else {
+                if (!status_line.empty())
+                    body_h += ImGui::CalcTextSize(status_line.c_str(), nullptr, false, avail_w).y
+                            + st.ItemSpacing.y;
+                body_h += play_h;
+            }
+            const float footer_y = ImGui::GetWindowHeight() - st.WindowPadding.y
+                                 - (body_h + st.ItemSpacing.y + 1.0f);
+            if (footer_y > ImGui::GetCursorPosY())
+                ImGui::SetCursorPosY(footer_y);
+        }
+
+        ImGui::Separator();
+
+        if (is_working) {
+            ImGui::Text("%s", status_line.c_str());
+            if (download_checking()) {
+                ImGui::SameLine();
+                ImGui::Text("  %s", L.dl_checking.c_str());
+            } else {
+                double speed = download_speed_mbps();
+                if (speed > 0.01) {
+                    ImGui::SameLine();
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), L.dl_speed_fmt.c_str(), speed);
+                    ImGui::Text("  %s", buf);
+                }
+                int eta = download_eta_seconds();
+                ImGui::SameLine();
+                if (eta < 0) {
+                    ImGui::TextUnformatted("  —");
+                } else if (eta > 0) {
+                    int m = eta / 60;
+                    int s = eta % 60;
+                    char ebuf[64];
+                    std::snprintf(ebuf, sizeof(ebuf), L.dl_eta_fmt.c_str(), m, s);
+                    ImGui::Text("  %s", ebuf);
+                }
+            }
+            ImGui::ProgressBar(pr, ImVec2(-FLT_MIN, 20));
+        } else {
+            if (!status_line.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("%s", status_line.c_str());
+                ImGui::PopStyleColor();
+            }
+            if (ImGui::Button(L.play.c_str(), ImVec2(-FLT_MIN, play_h))) {
+                config_.nickname = nickname_buf_;
+                save_settings();
+                handle_play_button();
+            }
+        }
+    }
+ 
+    const float content_h = ImGui::GetCursorPosY() + st.WindowPadding.y;
+    ImGui::End();
+
+    // ── Автоподгонка высоты окна под содержимое ─────────────────────────────
+    // Задача — «подрасти/сжаться» ровно тогда, когда реально меняется
+    // содержимое (смена языка, появление чекбокса модов, прогресс-бар,
+    // открытие/закрытие модалки настроек и т.п.), и никогда не отбивать
+    // ручной ресайз пользователя.
+    //
+    // Как это устроено:
+    //  * никакого принудительного setWindowSizeLimits по req_h — минимум
+    //    задан один раз в init(), сверху окно свободно;
+    //  * каждый кадр запоминаем фактическую высоту окна (s_observed_h);
+    //    если она отличается от того, что мы сами выставили в прошлый раз,
+    //    значит её поменял пользователь/WM — уважаем и ждём следующего
+    //    реального изменения контента;
+    //  * после ручного ресайза короткий «карантин» (300 мс), чтобы drag
+    //    мышью и одновременное изменение контента не конфликтовали;
+    //  * новую высоту применяем только когда реально изменилась нужная
+    //    высота контента (по сравнению с baseline).
+    static int    s_observed_h         = 0;    // высота окна, которую мы «видели»
+    static float  s_content_baseline_h = 0.0f; // высота контента, от которой считаем дельту
+    static double s_last_user_resize_at = 0.0; // время последнего внешнего ресайза
+
+    if (window_maximized) {
+        // В развёрнутом окне высоту не трогаем. Сбрасываем трекинг, чтобы
+        // после восстановления не было ложного «внешнего» ресайза.
+        s_observed_h = 0;
+        return;
+    }
+
+    int cur_w = 0, cur_h = 0;
+    glfwGetWindowSize(window_, &cur_w, &cur_h);
+
+    // Высота поменялась не нами → пользователь (или WM). Не мешаем.
+    const bool external_resize = (s_observed_h > 0) && (cur_h != s_observed_h);
+    if (external_resize) {
+        s_observed_h         = cur_h;
+        s_content_baseline_h = content_h;      // новый baseline — текущий контент
+        s_last_user_resize_at = ImGui::GetTime();
+        return;
+    }
+    s_observed_h = cur_h;
+
+    // Короткая пауза после ручного ресайза: даже если контент успел
+    // измениться в тот же момент (drag + клик), не дёргаем окно.
+    if (ImGui::GetTime() - s_last_user_resize_at < 0.3)
+        return;
+
+    float need_h = content_h;
+    if (settings_h > 0.0f)
+        need_h = std::max(need_h, settings_h + st.ItemSpacing.y * 2.0f);
+
+    // Реагируем только на настоящее изменение требуемой высоты.
+    if (std::abs(need_h - s_content_baseline_h) <= 1.0f)
+        return;
+    s_content_baseline_h = need_h;
+
+    int req_h = static_cast<int>(std::ceil(need_h));
+    int work_h = 0;
+    if (GLFWmonitor* mon = glfwGetPrimaryMonitor())
+        glfwGetMonitorWorkarea(mon, nullptr, nullptr, nullptr, &work_h);
+    if (work_h > 0) req_h = std::min(req_h, work_h - 80);
+    if (req_h < 380) req_h = 380;            // согласовано с минимумом в init()
+
+    if (std::abs(req_h - cur_h) <= 1)
+        return;                              // уже нужной высоты — делать нечего
+
+    glfwSetWindowSize(window_, cur_w, req_h);
+    s_observed_h = req_h;                    // наш собственный ресайз не считаем внешним
+}
+ 
+void Launcher::handle_play_button() {
+    if (config_.selected_version.empty()) {
+        LOG_ERROR("No version selected");
+        return;
+    }
+    
+    // НОВЫЕ ПРОВЕРКИ ДЛЯ QUILT И NEOFORGE
+    if (config_.mod_loader == ModLoader::Fabric && !version_supports_fabric(config_.selected_version)) {
+        LOG_WARN("Fabric requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+    if (config_.mod_loader == ModLoader::Forge && !version_supports_forge(config_.selected_version)) {
+        LOG_WARN("Forge requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+    if (config_.mod_loader == ModLoader::Quilt && !version_supports_quilt(config_.selected_version)) {
+        LOG_WARN("Quilt requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+    if (config_.mod_loader == ModLoader::NeoForge && !version_supports_neoforge(config_.selected_version)) {
+        LOG_WARN("NeoForge requested for unsupported Minecraft " << config_.selected_version << " — falling back to Vanilla");
+        config_.mod_loader = ModLoader::Vanilla;
+    }
+
+    if (is_working) return;
+    if (worker_.joinable()) worker_.join();
+
+    save_settings();
+    is_working = true;
+    MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
+    MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
+    MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
+    set_status(tr().preparing, 0.0f);
+ 
+    g_active_launcher = this;
+    MinecraftInstaller::set_progress_callback(&installer_progress_cb, nullptr);
+ 
+    Config cfg = config_;
+    bool install_mods = (config_.mod_loader == ModLoader::Fabric) &&
+                        perf_mods_checked_ &&
+                        MinecraftInstaller::supportsPerformanceMods(config_.selected_version);
+    const L10n* L = &tr();
+ 
+    worker_ = std::thread([this, cfg, install_mods, L] { play_worker(cfg, install_mods, *L); });
+}
+ 
+void Launcher::play_worker(Launcher::Config cfg, bool install_mods, const L10n& L) {
+    try {
+    Instance* inst = instance_manager_.get_selected();
+    if (!inst) {
+        set_status(L.launch_failed, 0.0f);
+        is_working = false;
+        return;
+    }
+    inst->mc_version = cfg.selected_version;
+    inst->memory_mb = cfg.memory_mb;
+    inst->mod_loader = cfg.mod_loader;
+    inst->nickname = cfg.nickname;
+    inst->ensure_layout();
+    inst->save();
+    if (MinecraftInstaller::is_cancelled()) {
+        is_working = false;
+        return;
+    }
+    const std::string mc_version = cfg.selected_version;
+    std::string launch_version = mc_version;
+ 
+    bool install_ok = false;
+ 
+    if (cfg.mod_loader == ModLoader::Vanilla) {
+        set_status(sfmt(L.installing_vanilla, mc_version), 0.05f);
+        install_ok = MinecraftInstaller::install(mc_version);
+        launch_version = mc_version;
+    } else if (cfg.mod_loader == ModLoader::Fabric) {
+        set_status(sfmt(L.installing_fabric_for, mc_version), 0.05f);
+        std::string fabric_ver = MinecraftInstaller::installFabric(mc_version);
+        if (!fabric_ver.empty()) {
+            install_ok = true;
+            launch_version = fabric_ver;
+            set_status(sfmt(L.fabric_installed, launch_version), 0.40f);
+        }
+    } else if (cfg.mod_loader == ModLoader::Forge) {
+        set_status("Installing Forge for " + mc_version + "...", 0.05f);
+        std::string forge_ver = MinecraftInstaller::installForge(mc_version);
+        if (!forge_ver.empty()) {
+            install_ok = true;
+            launch_version = forge_ver;
+            set_status("Forge installed: " + launch_version, 0.40f);
+        }
+    } else if (cfg.mod_loader == ModLoader::Quilt) {
+        set_status("Installing Quilt for " + mc_version + "...", 0.05f);
+        std::string quilt_ver = MinecraftInstaller::installQuilt(mc_version);
+        if (!quilt_ver.empty()) {
+            install_ok = true;
+            launch_version = quilt_ver;
+            set_status("Quilt installed: " + launch_version, 0.40f);
+        }
+    } else if (cfg.mod_loader == ModLoader::NeoForge) {
+        set_status("Installing NeoForge for " + mc_version + "...", 0.05f);
+        std::string neoforge_ver = MinecraftInstaller::installNeoForge(mc_version);
+        if (!neoforge_ver.empty()) {
+            install_ok = true;
+            launch_version = neoforge_ver;
+            set_status("NeoForge installed: " + launch_version, 0.40f);
+        }
+    }
+ 
+    if (MinecraftInstaller::is_cancelled()) {
+        is_working = false;
+        return;
+    }
+    if (!install_ok) {
+        std::string detail = MinecraftInstaller::last_error();
+        if (detail.empty()) detail = "unknown error";
+        std::string msg = sfmt(L.install_failed, detail);
+        LOG_ERROR(msg);
+        set_status(msg, 0.0f);
+        is_working = false;
+        return;
+    }
+ 
+    if (install_mods) {
+        if (MinecraftInstaller::is_cancelled()) {
+            is_working = false;
+            return;
+        }
+        set_status(L.installing_perf_mods, 0.45f);
+        if (!MinecraftInstaller::installPerformanceMods(inst->game_dir(), mc_version)) {
+            set_status(L.mods_failed, 0.90f);
+        }
+    }
+ 
+    if (MinecraftInstaller::is_cancelled()) {
+        is_working = false;
+        return;
+    }
+    set_status(sfmt(L.launching, launch_version), 0.95f);
+
+    hide_window_requested_ = true;
+
+    if (MinecraftInstaller::is_cancelled()) {
+        is_working = false;
+        return;
+    }
+    inst->version_id = launch_version;
+    inst->save();
+    bool launched = JavaLauncher::launch(*inst, /*wait_for_exit=*/true);
+
+    show_window_requested_ = true;
+
+    if (launched) {
+        set_status(L.ready, 0.0f);
+    } else {
+        set_status(L.launch_failed, 0.0f);
+    }
+    is_working = false;
+    } catch (const std::exception& e) {
+        LOG_ERROR("play_worker failed: " << e.what());
+        set_status(std::string("Error: ") + e.what(), 0.0f);
+        is_working = false;
+    } catch (...) {
+        LOG_ERROR("play_worker failed: unknown exception");
+        set_status("Unknown error", 0.0f);
+        is_working = false;
+    }
+}
+ 
+bool Launcher::should_close() const {
+    return should_close_;
+}
