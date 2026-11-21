@@ -2,10 +2,11 @@
 #include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
-#include "archive.h"
+#include "miniz.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#include <cstring>
 #include <stdexcept>
 #include <filesystem>
 #include <vector>
@@ -92,6 +93,98 @@ static bool http_download_file(const std::string& url, const fs::path& path)
         fs::remove(path, ec);
     }
     return ok;
+}
+
+static bool isSafeRelativeEntry(const std::string& rawName, fs::path& outRelPath)
+{
+    if (rawName.empty()) return false;
+
+    std::string normalized = rawName;
+    for (char& c : normalized) {
+        if (c == '\\') c = '/';
+    }
+
+    while (!normalized.empty() && normalized.front() == '/') {
+        normalized.erase(normalized.begin());
+    }
+    if (normalized.empty()) return false;
+
+    fs::path rel(normalized);
+    for (const auto& part : rel) {
+        if (part == "..") {
+            return false;
+        }
+    }
+
+    outRelPath = rel;
+    return true;
+}
+
+static bool extractZipWithMiniz(const fs::path& archivePath, const fs::path& destDir, std::string& errOut)
+{
+    mz_zip_archive zip;
+    std::memset(&zip, 0, sizeof(zip));
+
+    const std::string archiveUtf8 = archivePath.string();
+    if (!mz_zip_reader_init_file(&zip, archiveUtf8.c_str(), 0)) {
+        errOut = "mz_zip_reader_init_file failed for " + archiveUtf8;
+        return false;
+    }
+
+    const mz_uint numFiles = mz_zip_reader_get_num_files(&zip);
+    std::error_code ec;
+
+    for (mz_uint i = 0; i < numFiles; ++i) {
+        mz_zip_archive_file_stat stat;
+        if (!mz_zip_reader_file_stat(&zip, i, &stat)) {
+            errOut = "Failed to read file stat at index " + std::to_string(i);
+            mz_zip_reader_end(&zip);
+            return false;
+        }
+
+        fs::path relPath;
+        if (!isSafeRelativeEntry(stat.m_filename, relPath)) {
+            errOut = std::string("Unsafe entry path in archive: ") + stat.m_filename;
+            mz_zip_reader_end(&zip);
+            return false;
+        }
+
+        const fs::path outPath = destDir / relPath;
+        const bool isDir = mz_zip_reader_is_file_a_directory(&zip, i) != 0;
+
+        if (isDir) {
+            fs::create_directories(outPath, ec);
+            if (ec) {
+                errOut = "Failed to create directory " + outPath.string() + ": " + ec.message();
+                mz_zip_reader_end(&zip);
+                return false;
+            }
+            continue;
+        }
+
+        fs::create_directories(outPath.parent_path(), ec);
+        if (ec) {
+            errOut = "Failed to create parent directory for " + outPath.string() + ": " + ec.message();
+            mz_zip_reader_end(&zip);
+            return false;
+        }
+
+        if (!mz_zip_reader_extract_to_file(&zip, i, outPath.string().c_str(), 0)) {
+            errOut = "Failed to extract entry: " + relPath.string();
+            mz_zip_reader_end(&zip);
+            return false;
+        }
+
+#ifndef _WIN32
+        const uint32_t unixMode = (stat.m_external_attr >> 16) & 07777;
+        if (unixMode != 0) {
+            fs::permissions(outPath, static_cast<fs::perms>(unixMode), fs::perm_options::replace, ec);
+        }
+#endif
+    }
+
+    mz_zip_reader_end(&zip);
+    return true;
 }
 
 void JavaManager::log(const std::string& message, bool isError)
@@ -400,7 +493,7 @@ void JavaManager::extractJava(JavaVersion version, const fs::path& archivePath)
         log("Extracting Java to: " + tempJavaDir.string());
 
         std::string extractErr;
-        if (!archive::extract_zip(archivePath, tempJavaDir, &extractErr)) {
+        if (!extractZipWithMiniz(archivePath, tempJavaDir, extractErr)) {
             throw std::runtime_error("Failed to extract Java archive: " + extractErr);
         }
 
