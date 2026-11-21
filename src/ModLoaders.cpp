@@ -4,6 +4,7 @@
 #include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
+#include "ProcessRunner.h"  // ДОБАВЛЕНО
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -15,7 +16,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
-#include <cstdlib>
+// #include <cstdlib>  // УБРАНО - больше не нужен для std::system
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -216,22 +217,18 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         LOG_INFO("Installing Fabric...");
         fs::path fabric_log = launcher_paths::cache_dir() / "fabric-installer.log";
         fs::create_directories(fabric_log.parent_path());
-        const auto installer_path_u8 = installer_path.u8string();
-        const std::string installer_path_utf8(
-            reinterpret_cast<const char*>(installer_path_u8.data()), installer_path_u8.size());
-        const auto fabric_temp_dir_u8 = fabric_temp_dir.u8string();
-        const std::string fabric_temp_dir_utf8(
-            reinterpret_cast<const char*>(fabric_temp_dir_u8.data()), fabric_temp_dir_u8.size());
-        const auto fabric_log_u8 = fabric_log.u8string();
-        const std::string fabric_log_path_utf8(
-            reinterpret_cast<const char*>(fabric_log_u8.data()), fabric_log_u8.size());
-        std::string cmd = "\"" + java_cmd + "\" -jar \"" + installer_path_utf8 +
-                          "\" client -dir \"" + fabric_temp_dir_utf8 +
-                          "\" -mcversion " + version +
-                          " -loader " + loader_version +
-                          " -noprofile" +
-                          " > \"" + fabric_log_path_utf8 + "\" 2>&1";
-        int status = std::system(cmd.c_str());
+
+        // ИСПРАВЛЕНО: используем process::run вместо std::system
+        ProcessResult pr = process::run(
+            fs::path(java_cmd),
+            {"-jar", installer_path.string(),
+             "client", "-dir", fabric_temp_dir.string(),
+             "-mcversion", version,
+             "-loader", loader_version,
+             "-noprofile"},
+            fabric_log,
+            300); // таймаут 5 минут
+
         std::string fabric_out;
         {
             std::ifstream in(fabric_log);
@@ -239,11 +236,24 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
             ss << in.rdbuf();
             fabric_out = ss.str();
         }
-        if (status != 0) {
+
+        if (!pr.error.empty()) {
+            log_output_lines("Fabric installer: ", fabric_out);
+            set_install_error("Fabric install error: " + pr.error);
+            std::error_code cleanup_ec;
+            fs::remove_all(fabric_temp_dir, cleanup_ec);
+            return "";
+        }
+
+        if (pr.exit_code != 0 || pr.timed_out) {
             log_output_lines("Fabric installer: ", fabric_out);
             std::string line = pick_error_line(fabric_out);
-            if (line.empty())
-                line = "Fabric installation failed (status " + std::to_string(status) + ")";
+            if (line.empty()) {
+                if (pr.timed_out)
+                    line = "Fabric installation timed out";
+                else
+                    line = "Fabric installation failed (exit code " + std::to_string(pr.exit_code) + ")";
+            }
             set_install_error(line);
             std::error_code cleanup_ec;
             fs::remove_all(fabric_temp_dir, cleanup_ec);
@@ -363,7 +373,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                 const std::string id = entry.path().filename().string();
                 if (id.rfind(id_prefix, 0) != 0) continue;
                 if (!version_complete(entry.path())) continue;
-                
+
                 fs::path prof = entry.path() / (id + ".json");
                 if (!fs::is_regular_file(prof)) continue;
 
@@ -575,7 +585,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
             const json promotions = download_json(
                 "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json");
             const json promo_map = promotions.value("promos", json::object());
-            
+
             std::string forge_ver = promo_map.value(mc_version + "-recommended", std::string());
             if (forge_ver.empty())
                 forge_ver = promo_map.value(mc_version + "-latest", std::string());
@@ -602,7 +612,7 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
                 LOG_INFO("Downloading Modern Forge Installer...");
                 std::string url = "https://maven.minecraftforge.net/net/minecraftforge/forge/" + 
                                   full_ver + "/" + installer_name;
-                
+
                 LOG_INFO("Forge installer URL: " << url);
                 if (!download(url, installer_path)) {
                     set_install_error("Failed to download Forge Installer");
@@ -626,18 +636,32 @@ std::string MinecraftInstaller::installForge(const std::string& mc_version)
 
             report_progress(30, "Installing Forge...");
             LOG_INFO("Installing Modern Forge " << forge_ver << " for Minecraft " << mc_version);
-            
+
             const fs::path log_path = launcher_paths::cache_dir() / "forge-installer-modern.log";
-            std::string cmd = "\"" + java_cmd + "\" -jar \"" + path_utf8(installer_path) +
-                              "\" --installClient \"" + path_utf8(minecraft_dir) +
-                              "\" > \"" + path_utf8(log_path) + "\" 2>&1";
             
-            int status = std::system(cmd.c_str());
-            if (status != 0) {
+            // ИСПРАВЛЕНО: используем process::run вместо std::system
+            ProcessResult pr = process::run(
+                fs::path(java_cmd),
+                {"-jar", installer_path.string(), "--installClient", minecraft_dir.string()},
+                log_path,
+                600); // таймаут 10 минут
+
+            if (!pr.error.empty()) {
                 std::ifstream in(log_path);
                 std::ostringstream ss; ss << in.rdbuf();
                 log_output_lines("Forge installer: ", ss.str());
-                set_install_error("Forge installation failed (status " + std::to_string(status) + ")");
+                set_install_error("Forge install error: " + pr.error);
+                return "";
+            }
+
+            if (pr.exit_code != 0 || pr.timed_out) {
+                std::ifstream in(log_path);
+                std::ostringstream ss; ss << in.rdbuf();
+                log_output_lines("Forge installer: ", ss.str());
+                if (pr.timed_out)
+                    set_install_error("Forge installation timed out");
+                else
+                    set_install_error("Forge installation failed (exit code " + std::to_string(pr.exit_code) + ")");
                 return "";
             }
 
@@ -901,10 +925,14 @@ std::string MinecraftInstaller::installNeoForge(const std::string& mc_version)
         report_progress(35, "Installing NeoForge...");
         LOG_INFO("Installing NeoForge " << neoforge_version << " for Minecraft " << mc_version);
         const fs::path neoforge_log = launcher_paths::cache_dir() / "neoforge-installer.log";
-        std::string cmd = "\"" + java_cmd + "\" -jar \"" + path_utf8(installer_path) +
-                          "\" --installClient \"" + path_utf8(minecraft_dir) +
-                          "\" > \"" + path_utf8(neoforge_log) + "\" 2>&1";
-        int status = std::system(cmd.c_str());
+        
+        // ИСПРАВЛЕНО: используем process::run вместо std::system
+        ProcessResult pr = process::run(
+            fs::path(java_cmd),
+            {"-jar", installer_path.string(), "--installClient", minecraft_dir.string()},
+            neoforge_log,
+            600); // таймаут 10 минут
+
         std::string neoforge_out;
         {
             std::ifstream in(neoforge_log);
@@ -912,11 +940,22 @@ std::string MinecraftInstaller::installNeoForge(const std::string& mc_version)
             ss << in.rdbuf();
             neoforge_out = ss.str();
         }
-        if (status != 0) {
+
+        if (!pr.error.empty()) {
+            log_output_lines("NeoForge installer: ", neoforge_out);
+            set_install_error("NeoForge install error: " + pr.error);
+            return "";
+        }
+
+        if (pr.exit_code != 0 || pr.timed_out) {
             log_output_lines("NeoForge installer: ", neoforge_out);
             std::string line = pick_error_line(neoforge_out);
-            if (line.empty())
-                line = "NeoForge installation failed (status " + std::to_string(status) + ")";
+            if (line.empty()) {
+                if (pr.timed_out)
+                    line = "NeoForge installation timed out";
+                else
+                    line = "NeoForge installation failed (exit code " + std::to_string(pr.exit_code) + ")";
+            }
             set_install_error(line);
             return "";
         }
