@@ -67,6 +67,7 @@ endif()
 
 # ========== BUILD EXECUTABLE ==========
 add_executable(CLauncher ${SOURCES})
+target_compile_definitions(CLauncher PRIVATE MINIZ_EXPORT=)
 
 # .exe icon (Windows): embed clauncher.ico via resource file.
 # windres processes .rc automatically when file is added to sources.
