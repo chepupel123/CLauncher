@@ -4,8 +4,7 @@
 #include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
-#include "ProcessRunner.h"  // ДОБАВЛЕНО
-
+#include "ProcessRunner.h"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
@@ -16,7 +15,6 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
-// #include <cstdlib>  // УБРАНО - больше не нужен для std::system
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -62,7 +60,6 @@ namespace {
         return true;
     }
 
-    // Перенесено в самый верх, чтобы installForge мог её использовать
     std::string path_utf8(const fs::path& p)
     {
         const auto u8 = p.u8string();
@@ -200,7 +197,7 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
             JavaManager jm;
             fs::path jp = jm.ensureJava(jm.requiredMajor(version));
             if (!jp.empty()) {
-                java_cmd = path_utf8(jp); // Используем нашу функцию
+                java_cmd = path_utf8(jp); 
             }
         } catch (...) {}
 
@@ -218,7 +215,6 @@ std::string MinecraftInstaller::installFabric(const std::string& version)
         fs::path fabric_log = launcher_paths::cache_dir() / "fabric-installer.log";
         fs::create_directories(fabric_log.parent_path());
 
-        // ИСПРАВЛЕНО: используем process::run вместо std::system
         ProcessResult pr = process::run(
             fs::path(java_cmd),
             {"-jar", installer_path.string(),
