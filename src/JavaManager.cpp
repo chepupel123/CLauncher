@@ -2,8 +2,10 @@
 #include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
+#include "archive.h"
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <stdexcept>
 #include <filesystem>
 #include <vector>
@@ -21,7 +23,8 @@ namespace fs = std::filesystem;
 
 bool JavaManager::fileExists(const fs::path& path)
 {
-    return fs::exists(path) && fs::is_regular_file(path);
+    std::error_code ec;
+    return fs::exists(path, ec) && fs::is_regular_file(path, ec);
 }
 
 static std::string execCommandFirstLine(const std::string& cmd)
@@ -39,8 +42,6 @@ static std::string execCommandFirstLine(const std::string& cmd)
     return result;
 }
 
-// Загрузка файла встроенным libcurl — не зависим от системного curl
-// (на Windows это снимает требование к наличию curl.exe в PATH).
 static size_t http_write_cb(void* ptr, size_t size, size_t nmemb, FILE* file)
 {
     return fwrite(ptr, size, nmemb, file);
@@ -50,18 +51,25 @@ static bool http_download_file(const std::string& url, const fs::path& path)
 {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
+    if (ec) {
+        LOG_ERROR("Failed to create download directory: " << ec.message());
+        return false;
+    }
 
 #ifdef _WIN32
-    FILE* file = _wfopen(path.c_str(), L"wb");
+    FILE* file = _wfopen(path.wstring().c_str(), L"wb");
 #else
-    FILE* file = fopen(path.c_str(), "wb");
+    FILE* file = fopen(path.string().c_str(), "wb");
 #endif
-    if (!file) return false;
+    if (!file) {
+        LOG_ERROR("Failed to open destination file for writing: " << path.string());
+        return false;
+    }
 
     CURL* curl = curl_easy_init();
     bool ok = false;
     if (curl) {
-        curl_tls::apply(curl);  // NATIVE_CA / cacert.pem / системные CA
+        curl_tls::apply(curl);
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -73,12 +81,16 @@ static bool http_download_file(const std::string& url, const fs::path& path)
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
         CURLcode rc = curl_easy_perform(curl);
         ok = (rc == CURLE_OK);
-        if (!ok)
+        if (!ok) {
             LOG_ERROR("Java download failed: " << curl_easy_strerror(rc) << " URL: " << url);
+        }
         curl_easy_cleanup(curl);
     }
+
     fclose(file);
-    if (!ok) fs::remove(path, ec);
+    if (!ok) {
+        fs::remove(path, ec);
+    }
     return ok;
 }
 
@@ -111,17 +123,17 @@ std::string JavaManager::shellQuote(const std::string& value)
 int JavaManager::parseVersionPart(const std::string& version, std::size_t& pos)
 {
     while (pos < version.size() && version[pos] == '.') ++pos;
-    if (pos >= version.size() || !std::isdigit(version[pos])) return 0;
+    if (pos >= version.size() || !std::isdigit(static_cast<unsigned char>(version[pos]))) return 0;
     int val = 0;
-    while (pos < version.size() && std::isdigit(version[pos]))
+    while (pos < version.size() && std::isdigit(static_cast<unsigned char>(version[pos]))) {
         val = val * 10 + (version[pos++] - '0');
+    }
     return val;
 }
 
 JavaManager::JavaVersion JavaManager::getRequiredJava(const std::string& versionId) const
 {
     std::string mcVersion = versionId;
-
 
     if (versionId.find("fabric-loader-") == 0) {
         size_t lastDash = versionId.rfind('-');
@@ -132,7 +144,9 @@ JavaManager::JavaVersion JavaManager::getRequiredJava(const std::string& version
         }
     }
 
-    if (mcVersion.empty()) throw std::invalid_argument("Empty Minecraft version");
+    if (mcVersion.empty()) {
+        throw std::invalid_argument("Empty Minecraft version");
+    }
 
     std::size_t pos = 0;
     int major = parseVersionPart(mcVersion, pos);
@@ -165,11 +179,9 @@ std::string JavaManager::getDownloadUrl(JavaVersion version)
     const char* versions[] = {"8", "17", "21", "25"};
     int idx = static_cast<int>(version);
 
-
-
-
     return std::string("https://api.adoptium.net/v3/binary/latest/") +
-           versions[idx] + "/ga/" + os + "/x64/jre/hotspot/normal/eclipse?project=jdk";
+           versions[idx] + "/ga/" + os +
+           "/x64/jre/hotspot/normal/eclipse?project=jdk&archive_type=zip";
 }
 
 fs::path JavaManager::getJavaDirectory(JavaVersion version) const
@@ -188,55 +200,30 @@ fs::path JavaManager::getJavaBinary(JavaVersion version) const
 #endif
 }
 
-static bool commandOnPath(const char* name)
-{
-#ifdef _WIN32
-    std::wstring wname;
-    for (const char* p = name; *p; ++p)
-        wname.push_back(static_cast<unsigned char>(*p));
-
-    wchar_t found[MAX_PATH];
-    DWORD n = SearchPathW(nullptr, wname.c_str(), L".exe", MAX_PATH, found, nullptr);
-    if (n == 0 || n >= MAX_PATH) return false;
-    DWORD attr = GetFileAttributesW(found);
-    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
-#else
-    const char* path_env = std::getenv("PATH");
-    if (!path_env || !*path_env) return false;
-
-    std::string path(path_env);
-    size_t start = 0;
-    while (start <= path.size()) {
-        size_t sep = path.find(':', start);
-        std::string dir = path.substr(
-            start, sep == std::string::npos ? std::string::npos : sep - start);
-        if (dir.empty()) dir = ".";
-        fs::path candidate = fs::path(dir) / name;
-        std::error_code ec;
-        if (access(candidate.c_str(), X_OK) == 0 && fs::is_regular_file(candidate, ec))
-            return true;
-        if (sep == std::string::npos) break;
-        start = sep + 1;
-    }
-    return false;
-#endif
-}
-
 void JavaManager::checkDependencies()
 {
+    if (runtimeDir.empty()) {
+        throw std::runtime_error("Runtime directory is not configured.");
+    }
+
+    std::error_code ec;
+    fs::create_directories(runtimeDir, ec);
+    if (ec) {
+        throw std::runtime_error("Runtime directory is not accessible: " +
+                                 runtimeDir.string() + " (" + ec.message() + ")");
+    }
+
+    const fs::path probeFile = runtimeDir / ".write_probe.tmp";
 #ifdef _WIN32
-    // tar.exe (bsdtar) встроен в Windows 10 1803+ и нужен для распаковки JRE.
-    // PowerShell остаётся лишь запасным вариантом распаковки Java.
-    if (!commandOnPath("tar")) {
-        throw std::runtime_error(
-            "tar.exe not found. Windows 10 1803 or newer is required "
-            "(or install 7-Zip / bsdtar manually).");
-    }
+    FILE* f = _wfopen(probeFile.wstring().c_str(), L"wb");
 #else
-    if (!commandOnPath("tar")) {
-        throw std::runtime_error("tar is not installed. Please install tar.");
-    }
+    FILE* f = fopen(probeFile.string().c_str(), "wb");
 #endif
+    if (!f) {
+        throw std::runtime_error("Runtime directory is not writable: " + runtimeDir.string());
+    }
+    fclose(f);
+    fs::remove(probeFile, ec);
 }
 
 int JavaManager::extractMajorJavaVersion(const std::string& versionOutput)
@@ -250,12 +237,15 @@ int JavaManager::extractMajorJavaVersion(const std::string& versionOutput)
         pos += 9;
     }
 
-    while (pos < versionOutput.size() && (versionOutput[pos] == '"' || versionOutput[pos] == ' '))
+    while (pos < versionOutput.size() && (versionOutput[pos] == '"' || versionOutput[pos] == ' ')) {
         ++pos;
+    }
 
     std::string verStr;
-    while (pos < versionOutput.size() && (std::isdigit(versionOutput[pos]) || versionOutput[pos] == '.'))
+    while (pos < versionOutput.size() &&
+           (std::isdigit(static_cast<unsigned char>(versionOutput[pos])) || versionOutput[pos] == '.')) {
         verStr += versionOutput[pos++];
+    }
 
     if (verStr.empty()) return -1;
 
@@ -308,7 +298,6 @@ void JavaManager::verifyJavaInstallation(const fs::path& javaBinary, JavaVersion
         throw std::runtime_error("Java binary not found: " + javaBinary.string());
     }
 
-
     std::string cmd = shellQuote(javaBinary.string()) + " -version 2>&1";
     std::string out = execCommandFirstLine(cmd);
 
@@ -340,13 +329,7 @@ void JavaManager::verifyJavaInstallation(const fs::path& javaBinary, JavaVersion
 void JavaManager::downloadJava(JavaVersion version)
 {
     const fs::path javaDir = getJavaDirectory(version);
-    const fs::path archivePath = runtimeDir / (javaDir.filename().string() +
-#ifdef _WIN32
-        ".zip"
-#else
-        ".tar.gz"
-#endif
-    );
+    const fs::path archivePath = runtimeDir / (javaDir.filename().string() + ".zip");
 
     const std::string url = getDownloadUrl(version);
 
@@ -355,9 +338,11 @@ void JavaManager::downloadJava(JavaVersion version)
 
     std::error_code ec;
     fs::create_directories(javaDir, ec);
-    if (ec) throw std::runtime_error("Failed to create " + javaDir.string());
+    if (ec) {
+        throw std::runtime_error("Failed to create " + javaDir.string() + ": " + ec.message());
+    }
 
-    if (fs::exists(archivePath)) {
+    if (fs::exists(archivePath, ec)) {
         fs::remove(archivePath, ec);
     }
 
@@ -369,15 +354,14 @@ void JavaManager::downloadJava(JavaVersion version)
         bool downloaded = http_download_file(url, archivePath);
 
         if (downloaded && fileExists(archivePath)) {
-            uintmax_t size = fs::file_size(archivePath);
-            if (size > 0) {
-                log("Download complete: " + std::to_string(size / (1024*1024)) + " MB");
+            uintmax_t size = fs::file_size(archivePath, ec);
+            if (!ec && size > 0) {
+                log("Download complete: " + std::to_string(size / (1024 * 1024)) + " MB");
                 extractJava(version, archivePath);
                 fs::remove(archivePath, ec);
                 return;
             }
         }
-
 
         fs::remove(archivePath, ec);
 
@@ -387,13 +371,11 @@ void JavaManager::downloadJava(JavaVersion version)
                 std::to_string(delay) + " seconds...", true);
             std::this_thread::sleep_for(std::chrono::seconds(delay));
         } else {
-
             throw std::runtime_error("Failed to download Java after " +
-                                    std::to_string(MAX_RETRIES) + " attempts. " +
-                                    "Check your internet connection.");
+                                     std::to_string(MAX_RETRIES) + " attempts. " +
+                                     "Check your internet connection.");
         }
     }
-
 
     throw std::runtime_error("Unexpected: download loop ended without result");
 }
@@ -406,111 +388,89 @@ void JavaManager::extractJava(JavaVersion version, const fs::path& archivePath)
     std::error_code ec;
 
     try {
-    fs::remove_all(tempJavaDir, ec);
-    if (ec) throw std::runtime_error("Failed to clear temporary Java directory: " + ec.message());
-    fs::create_directories(tempJavaDir, ec);
-    if (ec) throw std::runtime_error("Failed to create temporary Java directory: " + ec.message());
+        fs::remove_all(tempJavaDir, ec);
+        if (ec) {
+            throw std::runtime_error("Failed to clear temporary Java directory: " + ec.message());
+        }
+        fs::create_directories(tempJavaDir, ec);
+        if (ec) {
+            throw std::runtime_error("Failed to create temporary Java directory: " + ec.message());
+        }
 
-    log("Extracting Java to: " + tempJavaDir.string());
+        log("Extracting Java to: " + tempJavaDir.string());
 
-    std::string cmd;
-#ifdef _WIN32
-    // Основной путь — встроенный в Windows 10 1803+ bsdtar (умеет zip).
-    // PowerShell Expand-Archive остаётся запасным вариантом на старых системах.
-    cmd = "tar -xf " + shellQuote(archivePath.string()) +
-          " -C " + shellQuote(tempJavaDir.string());
-    int result = std::system(cmd.c_str());
-    if (result != 0) {
-        log("tar extraction failed (code " + std::to_string(result) +
-            "), falling back to PowerShell Expand-Archive", true);
-        cmd = "powershell -NoProfile -Command \"$ProgressPreference='SilentlyContinue'; "
-              "Expand-Archive -Path " + shellQuote(archivePath.string()) +
-              " -DestinationPath " + shellQuote(tempJavaDir.string()) + " -Force\"";
-        result = std::system(cmd.c_str());
-    }
-#else
-    cmd = "tar -xzf " + shellQuote(archivePath.string()) +
-          " -C " + shellQuote(tempJavaDir.string()) + " --strip-components=1";
-    int result = std::system(cmd.c_str());
-#endif
+        std::string extractErr;
+        if (!archive::extract_zip(archivePath, tempJavaDir, &extractErr)) {
+            throw std::runtime_error("Failed to extract Java archive: " + extractErr);
+        }
 
-    if (result != 0) {
-        throw std::runtime_error("Extraction failed (exit code " + std::to_string(result) + ")");
-    }
-
-#ifdef _WIN32
-
-    std::vector<fs::path> subdirs;
-    try {
-        for (const auto& entry : fs::directory_iterator(tempJavaDir)) {
-            if (entry.is_directory()) {
+        std::vector<fs::path> subdirs;
+        for (const auto& entry : fs::directory_iterator(tempJavaDir, ec)) {
+            if (ec) {
+                throw std::runtime_error("Failed to list extracted directory: " + ec.message());
+            }
+            if (entry.is_directory(ec)) {
                 subdirs.push_back(entry.path());
             }
         }
-    } catch (const fs::filesystem_error& e) {
-        throw std::runtime_error("Failed to list extracted directory: " + std::string(e.what()));
-    }
 
-    if (subdirs.size() == 1) {
-        fs::path src = subdirs[0];
-        std::error_code ec2;
-
-        try {
-            for (const auto& sub : fs::directory_iterator(src)) {
+        if (subdirs.size() == 1) {
+            const fs::path& src = subdirs[0];
+            for (const auto& sub : fs::directory_iterator(src, ec)) {
+                if (ec) {
+                    throw std::runtime_error("Failed to iterate extracted subfolder: " + ec.message());
+                }
                 fs::path dest = tempJavaDir / sub.path().filename();
-                fs::rename(sub.path(), dest, ec2);
-                if (ec2) {
+                fs::rename(sub.path(), dest, ec);
+                if (ec) {
                     throw std::runtime_error("Failed to move " + sub.path().filename().string() +
-                                           ": " + ec2.message());
+                                             ": " + ec.message());
                 }
             }
-        } catch (const fs::filesystem_error& e) {
-            throw std::runtime_error("Error during Java extraction restructuring: " +
-                                    std::string(e.what()));
+            fs::remove(src, ec);
         }
-
-        fs::remove(src, ec2);
-    }
-#endif
 
 #ifdef _WIN32
-    const fs::path javaBinary = tempJavaDir / "bin" / "java.exe";
+        const fs::path javaBinary = tempJavaDir / "bin" / "java.exe";
 #else
-    const fs::path javaBinary = tempJavaDir / "bin" / "java";
+        const fs::path javaBinary = tempJavaDir / "bin" / "java";
 #endif
-    if (!fileExists(javaBinary)) {
-        throw std::runtime_error("Java binary not found after extraction: " + javaBinary.string());
-    }
+        if (!fileExists(javaBinary)) {
+            throw std::runtime_error("Java binary not found after extraction: " + javaBinary.string());
+        }
 
 #ifndef _WIN32
-    makeExecutable(javaBinary);
+        makeExecutable(javaBinary);
 #endif
 
+        verifyJavaInstallation(javaBinary, version);
 
-    verifyJavaInstallation(javaBinary, version);
-
-    fs::path backupJavaDir = javaDir;
-    backupJavaDir += ".old";
-    const bool hadJavaDir = fs::exists(javaDir);
-    if (hadJavaDir) {
-        fs::remove_all(backupJavaDir, ec);
-        if (ec) throw std::runtime_error("Failed to clear Java backup directory: " + ec.message());
-        fs::rename(javaDir, backupJavaDir, ec);
-        if (ec) throw std::runtime_error("Failed to preserve existing Java: " + ec.message());
-    }
-
-    fs::rename(tempJavaDir, javaDir, ec);
-    if (ec) {
-        const std::string replace_error = ec.message();
+        fs::path backupJavaDir = javaDir;
+        backupJavaDir += ".old";
+        const bool hadJavaDir = fs::exists(javaDir, ec);
         if (hadJavaDir) {
-            std::error_code restore_ec;
-            fs::rename(backupJavaDir, javaDir, restore_ec);
+            fs::remove_all(backupJavaDir, ec);
+            if (ec) {
+                throw std::runtime_error("Failed to clear Java backup directory: " + ec.message());
+            }
+            fs::rename(javaDir, backupJavaDir, ec);
+            if (ec) {
+                throw std::runtime_error("Failed to preserve existing Java: " + ec.message());
+            }
         }
-        throw std::runtime_error("Failed to replace Java installation: " + replace_error);
-    }
-    fs::remove_all(backupJavaDir, ec);
 
-    log("Extraction complete.");
+        fs::rename(tempJavaDir, javaDir, ec);
+        if (ec) {
+            const std::string replace_error = ec.message();
+            if (hadJavaDir) {
+                std::error_code restore_ec;
+                fs::rename(backupJavaDir, javaDir, restore_ec);
+            }
+            throw std::runtime_error("Failed to replace Java installation: " + replace_error);
+        }
+
+        fs::remove_all(backupJavaDir, ec);
+        log("Extraction complete.");
     } catch (...) {
         std::error_code cleanup_ec;
         fs::remove_all(tempJavaDir, cleanup_ec);
@@ -576,7 +536,8 @@ fs::path JavaManager::resolveJava(const JavaInstance& instance)
 {
     if (!instance.manual_path.empty()) {
         const fs::path& p = instance.manual_path;
-        if (fs::is_directory(p)) {
+        std::error_code ec;
+        if (fs::is_directory(p, ec)) {
 #ifdef _WIN32
             fs::path bin = p / "bin" / "java.exe";
             if (!fileExists(bin)) bin = p / "java.exe";
