@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(CLauncher VERSION 1.0.3 LANGUAGES C CXX)
+project(CLauncher VERSION 1.0.4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,17 @@ find_package(Threads REQUIRED)
 find_package(nlohmann_json 3.2.0 QUIET)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(IMGUI imgui)
+
+# ========== FETCH CONTENT (MINIZ) ==========
+include(FetchContent)
+FetchContent_Declare(
+    miniz
+    GIT_REPOSITORY https://github.com/richgel999/miniz.git
+    GIT_TAG master
+)
+set(MINIZ_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(MINIZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(miniz)
 
 # ========== NLOHMANN JSON SETUP ==========
 if(NOT nlohmann_json_FOUND)
@@ -45,7 +56,6 @@ set(SOURCES
     src/Downloader.cpp
     src/ModLoaders.cpp
     src/JavaManager.cpp
-    src/miniz.c
     src/logger.cpp
     src/curl_tls.cpp
     src/single_instance.cpp
@@ -67,7 +77,6 @@ endif()
 
 # ========== BUILD EXECUTABLE ==========
 add_executable(CLauncher ${SOURCES})
-target_compile_definitions(CLauncher PRIVATE MINIZ_EXPORT=)
 
 # .exe icon (Windows): embed clauncher.ico via resource file.
 # windres processes .rc automatically when file is added to sources.
@@ -82,6 +91,7 @@ if(WIN32)
         OpenGL::GL
         CURL::libcurl
         Threads::Threads
+        miniz
         shell32 user32 gdi32 advapi32
     )
 
@@ -99,6 +109,7 @@ else()
         OpenGL::GL
         CURL::libcurl
         Threads::Threads
+        miniz
     )
 endif()
 
