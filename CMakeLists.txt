@@ -56,11 +56,13 @@ set(SOURCES
     src/Downloader.cpp
     src/ModLoaders.cpp
     src/JavaManager.cpp
+    src/ProcessRunner.cpp
     src/logger.cpp
     src/curl_tls.cpp
     src/single_instance.cpp
     src/instance.cpp
     src/instance_manager.cpp
+)
 )
 
 # ImGui sources (if vendored)
