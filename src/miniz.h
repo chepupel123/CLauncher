@@ -112,7 +112,9 @@
 */
 #pragma once
 
-#include "miniz_export.h"
+#ifndef MINIZ_EXPORT
+#define MINIZ_EXPORT
+#endif
 
 #if defined(_MSC_VER)
 #define MZ_FORCEINLINE __forceinline
