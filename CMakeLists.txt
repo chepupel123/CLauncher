@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(CLauncher VERSION 1.0.3 LANGUAGES CXX)
+project(CLauncher VERSION 1.0.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,6 +45,7 @@ set(SOURCES
     src/Downloader.cpp
     src/ModLoaders.cpp
     src/JavaManager.cpp
+    src/miniz.c
     src/logger.cpp
     src/curl_tls.cpp
     src/single_instance.cpp
