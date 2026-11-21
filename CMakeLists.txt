@@ -63,7 +63,6 @@ set(SOURCES
     src/instance.cpp
     src/instance_manager.cpp
 )
-)
 
 # ImGui sources (if vendored)
 if(NOT IMGUI_FOUND)
