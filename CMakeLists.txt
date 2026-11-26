@@ -138,17 +138,43 @@ if(WIN32)
         )
     endif()
 endif()
+
 # ========== INSTALL & RELEASE SIZE OPTIMIZATION ==========
 install(TARGETS CLauncher RUNTIME DESTINATION bin)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     if(WIN32)
+        # >>> CHANGED: Windows/GCC path.
+        #
+        # Bug: GCC 16 on MinGW with C++20 + -Os auto-enables -fdeclone-ctor-dtor,
+        # which drops the out-of-line definition of the std::string move
+        # constructor. Result: link fails with
+        #   undefined reference to
+        #   std::__cxx11::basic_string<...>::basic_string(basic_string&&)
+        # Fix: explicitly disable that sub-optimization. -Os itself stays ON,
+        # so the binary remains size-optimized.
+        #
+        # Also added -ffunction-sections/-fdata-sections + --gc-sections
+        # (safe on MinGW, further trims dead code) and LTO, which MinGW
+        # supports for size reduction.
         target_compile_options(CLauncher PRIVATE
             $<$<CONFIG:Release>:-Os>
+            $<$<CONFIG:Release>:-ffunction-sections>
+            $<$<CONFIG:Release>:-fdata-sections>
+            $<$<CONFIG:Release>:-flto=auto>
         )
         target_link_options(CLauncher PRIVATE
             $<$<CONFIG:Release>:-s>
+            $<$<CONFIG:Release>:-flto=auto>
+            $<$<CONFIG:Release>:-Wl,--gc-sections>
         )
+
+        # >>> FIX: permanent workaround for GCC 16 MinGW bug (Bug 125359).
+        # Applies to ALL configs so nobody can accidentally reintroduce the
+        # broken std::string move-ctor by flipping CMAKE_BUILD_TYPE.
+        if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
+            target_compile_options(CLauncher PRIVATE -fno-declone-ctor-dtor)
+        endif()
     else()
         target_compile_options(CLauncher PRIVATE
             $<$<CONFIG:Release>:-Os -flto=auto -ffunction-sections -fdata-sections>
