@@ -33,14 +33,21 @@
 #endif
 
 using namespace downloader;
+
+// =========================================================================
+// МОСТИК
+// =========================================================================
 namespace downloader {
     bool ensure_assets(const fs::path& minecraft, const json& metadata, int pct_from, int pct_to);
+    bool version_complete(const fs::path& dir);
+    void mark_version_complete(const fs::path& dir);
+    bool is_version_less(const std::string& version, int target_major, int target_minor, int target_patch);
     
     extern MinecraftInstaller::ProgressFn g_progress_fn;
     extern void* g_progress_user;
     extern int g_stage_pct_from;
     extern int g_stage_pct_to;
-    extern std::string g_last_error; // На всякий случай, если нет в Downloader.h
+    extern std::string g_last_error;
 }
 // =========================================================================
 
@@ -187,7 +194,6 @@ bool MinecraftInstaller::install(const std::string& version) {
 
         if (!ensure_libraries(version_dir, metadata, 10, 45)) { if (g_last_error.empty()) set_install_error("Failed to download libraries"); return false; }
         
-        // Теперь эта функция явно объявлена в начале файла
         if (!downloader::ensure_assets(minecraft, metadata, 45, 92)) { if (g_last_error.empty()) set_install_error("Failed to download assets"); return false; }
         
         report_progress(92, "Natives...");
