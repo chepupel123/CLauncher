@@ -1,9 +1,8 @@
 #include "MinecraftInstaller.h"
-#include "version_manager.h"
-#include "JavaManager.h"
-#include "paths.h"
 #include "curl_tls.h"
 #include "logger.h"
+#include "Downloader.h"
+#include "paths.h"
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -13,7 +12,6 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -36,11 +34,6 @@
 #include <windows.h>
 #endif
 
-#include "Downloader.h"
-#include "ModLoaders.h"
-
-using namespace downloader;
-
 namespace MinecraftInstaller {
     std::atomic<double> g_download_speed_mbps{0.0};
     std::atomic<int> g_download_eta_seconds{-1};
@@ -48,13 +41,12 @@ namespace MinecraftInstaller {
 }
 
 namespace downloader {
-std::string g_stage_label;
+    std::string g_stage_label;
     MinecraftInstaller::ProgressFn g_progress_fn = nullptr;
     void* g_progress_user = nullptr;
     std::string g_last_error;
 
-    void set_install_error(const std::string& msg)
-    {
+    void set_install_error(const std::string& msg) {
         g_last_error = msg;
         LOG_ERROR(msg);
     }
@@ -97,41 +89,30 @@ std::string g_stage_label;
     void update_speed_eta(size_t bytes_done, size_t bytes_total) {
         if (bytes_total == 0) return;
         if (bytes_done > bytes_total) bytes_done = bytes_total;
-
         bool hashing = g_verify_inflight.load(std::memory_order_relaxed) > 0;
-
         if (hashing) {
             MinecraftInstaller::g_download_checking.store(true, std::memory_order_relaxed);
             return;
         }
         MinecraftInstaller::g_download_checking.store(false, std::memory_order_relaxed);
-
-        double elapsed = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - g_stage_start_time).count();
-
+        double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stage_start_time).count();
         if (elapsed < kSpeedWarmupSec) {
             MinecraftInstaller::g_download_speed_mbps.store(0.0, std::memory_order_relaxed);
             MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
             return;
         }
-
-        size_t transferred = (bytes_done >= g_stage_bytes_at_start)
-            ? (bytes_done - g_stage_bytes_at_start) : 0;
+        size_t transferred = (bytes_done >= g_stage_bytes_at_start) ? (bytes_done - g_stage_bytes_at_start) : 0;
         double speed_mbps = (static_cast<double>(transferred) / 1024.0 / 1024.0) / elapsed;
         MinecraftInstaller::g_download_speed_mbps.store(speed_mbps, std::memory_order_relaxed);
-
         size_t remaining = bytes_total - bytes_done;
-
         if (remaining < 1024 * 1024) {
             MinecraftInstaller::g_download_eta_seconds.store(1, std::memory_order_relaxed);
             return;
         }
-
         if (speed_mbps < kMinEtaSpeedMbps) {
             MinecraftInstaller::g_download_eta_seconds.store(-1, std::memory_order_relaxed);
             return;
         }
-
         double speed_bps = speed_mbps * 1024.0 * 1024.0;
         double eta_d = static_cast<double>(remaining) / speed_bps;
         int eta = -1;
@@ -139,41 +120,12 @@ std::string g_stage_label;
             eta = static_cast<int>(std::ceil(eta_d));
         MinecraftInstaller::g_download_eta_seconds.store(eta, std::memory_order_relaxed);
     }
-    bool is_version_less(const std::string& version, int target_major,
-                                int target_minor, int target_patch)
-    {
-        int major = 0, minor = 0, patch = 0;
-        std::sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch);
-        if (major != target_major) return major < target_major;
-        if (minor != target_minor) return minor < target_minor;
-        return patch < target_patch;
-    }
-
-    bool version_complete(const fs::path& dir)
-    {
-        std::error_code ec;
-        return fs::is_regular_file(dir / ".complete", ec);
-    }
-
-    void mark_version_complete(const fs::path& dir)
-    {
-        std::ofstream(dir / ".complete", std::ios::binary).put('\n');
-    }
 
     std::once_flag curl_global_once;
-    void ensure_curl_global()
-    {
-        std::call_once(curl_global_once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
-    }
+    void ensure_curl_global() { std::call_once(curl_global_once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); }); }
+    bool apply_tls(CURL* curl) { ensure_curl_global(); return curl_tls::apply(curl); }
 
-    bool apply_tls(CURL* curl)
-    {
-        ensure_curl_global();
-        return curl_tls::apply(curl);
-    }
-
-    std::string log_curl_failure(const std::string& url, CURLcode rc, int attempt = 0)
-    {
+    std::string log_curl_failure(const std::string& url, CURLcode rc, int attempt = 0) {
         std::ostringstream ss;
         ss << "Download failed";
         if (attempt) ss << " (attempt " << attempt << ")";
@@ -184,8 +136,7 @@ std::string g_stage_label;
         return msg;
     }
 
-    size_t write_file(void* ptr, size_t size, size_t count, FILE* file)
-    {
+    size_t write_file(void* ptr, size_t size, size_t count, FILE* file) {
         size_t n = fwrite(ptr, size, count, file);
         if (n != count) t_write_error = true;
         size_t nbytes = n * size;
@@ -196,8 +147,7 @@ std::string g_stage_label;
         return nbytes;
     }
 
-    static FILE* open_write_binary(const fs::path& path)
-    {
+    static FILE* open_write_binary(const fs::path& path) {
 #ifdef _WIN32
         return _wfopen(path.c_str(), L"wb");
 #else
@@ -205,24 +155,16 @@ std::string g_stage_label;
 #endif
     }
 
-    bool download(const std::string& url, const fs::path& path)
-    {
+    bool download(const std::string& url, const fs::path& path) {
         ensure_curl_global();
         fs::create_directories(path.parent_path());
         std::string last_fail;
         for (int attempt = 1; attempt <= 2; ++attempt) {
             CURL* curl = curl_easy_init();
-            if (!curl) {
-                set_install_error("Failed to initialize curl");
-                return false;
-            }
+            if (!curl) { set_install_error("Failed to initialize curl"); return false; }
             apply_tls(curl);
             FILE* file = open_write_binary(path);
-            if (!file) {
-                curl_easy_cleanup(curl);
-                set_install_error("Failed to open " + path.string());
-                return false;
-            }
+            if (!file) { curl_easy_cleanup(curl); set_install_error("Failed to open " + path.string()); return false; }
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
             curl_easy_setopt(curl, CURLOPT_USERAGENT, "CLauncher/1.0.3");
@@ -251,8 +193,7 @@ std::string g_stage_label;
         return size * nmemb;
     }
 
-    json download_json(const std::string& url)
-    {
+    json download_json(const std::string& url) {
         ensure_curl_global();
         CURL* curl = curl_easy_init();
         if (!curl) throw std::runtime_error("Failed to initialize curl");
@@ -269,98 +210,70 @@ std::string g_stage_label;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         curl_easy_cleanup(curl);
         if (result != CURLE_OK) {
-            LOG_ERROR("Failed to download JSON: " << curl_easy_strerror(result)
-                      << " (HTTP code: " << http_code << ") URL: " << url);
-            throw std::runtime_error(
-                std::string("Failed to download JSON: ") +
-                curl_easy_strerror(result) +
-                " (HTTP code: " + std::to_string(http_code) + ")"
-            );
+            LOG_ERROR("Failed to download JSON: " << curl_easy_strerror(result) << " (HTTP code: " << http_code << ") URL: " << url);
+            throw std::runtime_error(std::string("Failed to download JSON: ") + curl_easy_strerror(result) + " (HTTP code: " + std::to_string(http_code) + ")");
         }
         if (data.empty()) throw std::runtime_error("Downloaded JSON is empty");
         return json::parse(data);
     }
 
-    bool sha1_of_file(const fs::path& path, std::string& out_hex)
-    {
+    bool sha1_of_file(const fs::path& path, std::string& out_hex) {
 #ifdef _WIN32
         FILE* file = _wfopen(path.c_str(), L"rb");
 #else
         FILE* file = fopen(path.c_str(), "rb");
 #endif
         if (!file) return false;
-
-        std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
-            EVP_MD_CTX_new(), &EVP_MD_CTX_free);
-        if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha1(), nullptr) != 1) {
-            fclose(file);
-            return false;
-        }
-
+        std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+        if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha1(), nullptr) != 1) { fclose(file); return false; }
         unsigned char buf[8192];
         size_t nread = 0;
         while ((nread = fread(buf, 1, sizeof(buf), file)) > 0) {
-            if (EVP_DigestUpdate(ctx.get(), buf, nread) != 1) {
-                fclose(file);
-                return false;
-            }
+            if (EVP_DigestUpdate(ctx.get(), buf, nread) != 1) { fclose(file); return false; }
         }
-        if (ferror(file)) {
-            fclose(file);
-            return false;
-        }
+        if (ferror(file)) { fclose(file); return false; }
         fclose(file);
-
         unsigned char md[EVP_MAX_MD_SIZE];
         unsigned int md_len = 0;
         if (EVP_DigestFinal_ex(ctx.get(), md, &md_len) != 1) return false;
-
         static constexpr char hexdigits[] = "0123456789abcdef";
         out_hex.resize(static_cast<size_t>(md_len) * 2);
         for (unsigned int i = 0; i < md_len; ++i) {
-            out_hex[i * 2]     = hexdigits[(md[i] >> 4) & 0x0F];
+            out_hex[i * 2] = hexdigits[(md[i] >> 4) & 0x0F];
             out_hex[i * 2 + 1] = hexdigits[md[i] & 0x0F];
         }
         return true;
     }
 
     std::string to_lower(std::string s) {
-        std::transform(s.begin(), s.end(), s.begin(),
-                       [](unsigned char c) { return char(std::tolower(c)); });
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
         return s;
     }
 
-    bool verify_sha1(const fs::path& path, const std::string& expected)
-    {
+    bool verify_sha1(const fs::path& path, const std::string& expected) {
         if (expected.empty()) return true;
         std::string actual;
         if (!sha1_of_file(path, actual)) return false;
         return actual == to_lower(expected);
     }
 
-    size_t json_file_size(const json& j)
-    {
+    size_t json_file_size(const json& j) {
         if (!j.contains("size") || !j["size"].is_number_integer()) return 0;
         try {
             int64_t sz = j["size"].get<int64_t>();
             if (sz <= 0) return 0;
             return static_cast<size_t>(sz);
-        } catch (...) {
-            return 0;
-        }
+        } catch (...) { return 0; }
     }
 
-    bool download_item(CURL* curl, const DownloadItem& it)
-    {
+    bool download_item(CURL* curl, const DownloadItem& it) {
         t_count_bytes = false;
         t_attempt_bytes = 0;
         try {
             fs::create_directories(it.dest.parent_path());
-            fs::path tmp = it.dest;
-            tmp += ".part";
+            fs::path tmp = it.dest; tmp += ".part";
             FILE* file = open_write_binary(tmp);
             if (!file) return false;
-
             curl_easy_reset(curl);
             apply_tls(curl);
             curl_easy_setopt(curl, CURLOPT_URL, it.url.c_str());
@@ -370,10 +283,8 @@ std::string g_stage_label;
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
             curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
             curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
             curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 45L);
-
             t_count_bytes = it.size > 0;
             t_write_error = false;
             CURLcode result = curl_easy_perform(curl);
@@ -381,53 +292,33 @@ std::string g_stage_label;
             t_write_error = false;
             t_count_bytes = false;
             fclose(file);
-
             bool ok = (result == CURLE_OK);
             if (!ok) log_curl_failure(it.url, result);
-            
-            // Проверяем SHA1 ТОЛЬКО для только что скачанного файла (.part)
             if (ok && !it.sha1.empty()) {
                 g_verify_inflight.fetch_add(1, std::memory_order_relaxed);
                 ok = verify_sha1(tmp, it.sha1);
                 g_verify_inflight.fetch_sub(1, std::memory_order_relaxed);
-                if (!ok) {
-                    std::error_code ec;
-                    LOG_WARN("SHA1 mismatch for " << it.dest.filename().string()
-                        << " (size=" << fs::file_size(tmp, ec)
-                        << ", expected=" << it.size
-                        << ", url=" << it.url << ")");
-                }
             }
             if (ok) {
 #ifdef _WIN32
                 ok = MoveFileExW(tmp.c_str(), it.dest.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 #else
-                std::error_code ec;
-                fs::rename(tmp, it.dest, ec);
-                ok = !ec;
+                std::error_code ec; fs::rename(tmp, it.dest, ec); ok = !ec;
 #endif
             }
             if (!ok) {
-                std::error_code ec;
-                fs::remove(tmp, ec);
-                if (t_attempt_bytes != 0) {
-                    g_bytes_done.fetch_sub(t_attempt_bytes, std::memory_order_relaxed);
-                    t_attempt_bytes = 0;
-                }
+                std::error_code ec; fs::remove(tmp, ec);
+                if (t_attempt_bytes != 0) { g_bytes_done.fetch_sub(t_attempt_bytes, std::memory_order_relaxed); t_attempt_bytes = 0; }
             }
             return ok;
         } catch (...) {
             t_count_bytes = false;
-            if (t_attempt_bytes != 0) {
-                g_bytes_done.fetch_sub(t_attempt_bytes, std::memory_order_relaxed);
-                t_attempt_bytes = 0;
-            }
+            if (t_attempt_bytes != 0) { g_bytes_done.fetch_sub(t_attempt_bytes, std::memory_order_relaxed); t_attempt_bytes = 0; }
             return false;
         }
     }
 
-    bool download_item_once(const DownloadItem& it)
-    {
+    bool download_item_once(const DownloadItem& it) {
         ensure_curl_global();
         CURL* curl = curl_easy_init();
         if (!curl) return false;
@@ -436,39 +327,25 @@ std::string g_stage_label;
         return ok;
     }
 
-    bool parallel_download(std::vector<DownloadItem> items, const std::string& stage_label,
-                           unsigned max_workers, int pct_from, int pct_to)
-    {
-        if (MinecraftInstaller::is_cancelled()) {
-            set_install_error("Cancelled by user");
-            return false;
-        }
+    bool parallel_download(std::vector<DownloadItem> items, const std::string& stage_label, unsigned max_workers, int pct_from, int pct_to) {
+        if (MinecraftInstaller::is_cancelled()) { set_install_error("Cancelled by user"); return false; }
         if (items.empty()) return true;
         ensure_curl_global();
-
         std::vector<DownloadItem> todo;
         todo.reserve(items.size());
         
-        // 🚀 ОПТИМИЗАЦИЯ: Быстрая проверка файлов перед скачиванием.
-        // Мы проверяем ТОЛЬКО размер файла. Если он совпадает, то файл считается целым,
-        // и мы не тратим драгоценное время на чтение и подсчет SHA1.
+        // БЫСТРАЯ ПРОВЕРКА ПО РАЗМЕРУ
         for (auto& it : items) {
-            if (MinecraftInstaller::is_cancelled()) {
-                set_install_error("Cancelled by user");
-                return false;
-            }
-            
+            if (MinecraftInstaller::is_cancelled()) { set_install_error("Cancelled by user"); return false; }
             bool cached = false;
             if (fs::exists(it.dest)) {
                 if (it.size > 0) {
                     std::error_code ec;
                     cached = (fs::file_size(it.dest, ec) == it.size && !ec);
                 } else {
-                    // Если размер неизвестен, то проверяем SHA1 (таких файлов мало)
                     cached = it.sha1.empty() ? true : verify_sha1(it.dest, it.sha1);
                 }
             }
-
             if (!cached) todo.push_back(std::move(it));
         }
         if (todo.empty()) return true;
@@ -482,19 +359,16 @@ std::string g_stage_label;
         else if (total <= 100) by_files = 8;
         unsigned workers = std::min(by_cpu, by_files);
         workers = std::min(workers, max_workers);
-
         if (const char* env = std::getenv("LAUNCHER_DL_THREADS")) {
             long n = std::strtol(env, nullptr, 10);
             if (n >= 1 && n <= 64) workers = static_cast<unsigned>(n);
         }
         if (workers > total) workers = static_cast<unsigned>(total);
         g_stage_label = stage_label;
-        LOG_INFO(stage_label << ": " << total << " files to download, "
-                 << workers << " threads");
+        LOG_INFO(stage_label << ": " << total << " files to download, " << workers << " threads");
 
         size_t bytes_total = 0;
-        for (const auto& it : todo)
-            if (it.size > 0) bytes_total += it.size;
+        for (const auto& it : todo) if (it.size > 0) bytes_total += it.size;
         reset_speed_state();
         g_stage_pct_from = pct_from;
         g_stage_pct_to = pct_to;
@@ -506,18 +380,14 @@ std::string g_stage_label;
 
         auto worker = [&] {
             CURL* curl = curl_easy_init();
-            if (!curl) {
-                workers_alive.fetch_sub(1);
-                return;
-            }
+            if (!curl) { workers_alive.fetch_sub(1); return; }
             for (;;) {
                 if (MinecraftInstaller::is_cancelled()) break;
                 size_t i = next.fetch_add(1);
                 if (i >= total) break;
                 const DownloadItem& it = todo[i];
                 bool ok = download_item(curl, it);
-                if (!ok && !MinecraftInstaller::is_cancelled())
-                    ok = download_item(curl, it);
+                if (!ok && !MinecraftInstaller::is_cancelled()) ok = download_item(curl, it);
                 if (!ok && !MinecraftInstaller::is_cancelled()) {
                     std::lock_guard<std::mutex> lk(fail_mtx);
                     failed.push_back(it);
@@ -541,15 +411,11 @@ std::string g_stage_label;
             } else if (total > 0) {
                 frac = static_cast<double>(files_done) / static_cast<double>(total);
             }
-            if (pct_from < 0 || pct_to <= pct_from)
-                return static_cast<int>(100.0 * frac);
+            if (pct_from < 0 || pct_to <= pct_from) return static_cast<int>(100.0 * frac);
             return pct_from + static_cast<int>((pct_to - pct_from) * frac);
         };
         auto publish = [&](size_t d) {
-            if (bytes_total == 0) {
-                report_progress(pct_now(d), stage_label.c_str());
-                return;
-            }
+            if (bytes_total == 0) { report_progress(pct_now(d), stage_label.c_str()); return; }
             size_t bytes_done = g_bytes_done.load(std::memory_order_relaxed);
             if (bytes_done > bytes_total) bytes_done = bytes_total;
             update_speed_eta(bytes_done, bytes_total);
@@ -558,16 +424,8 @@ std::string g_stage_label;
         };
         bool ok = true;
         while (done.load(std::memory_order_relaxed) < total) {
-            if (MinecraftInstaller::is_cancelled()) {
-                set_install_error("Cancelled by user");
-                ok = false;
-                break;
-            }
-            if (workers_alive.load() == 0 && done.load() < total) {
-                set_install_error("Download failed: all workers exited");
-                ok = false;
-                break;
-            }
+            if (MinecraftInstaller::is_cancelled()) { set_install_error("Cancelled by user"); ok = false; break; }
+            if (workers_alive.load() == 0 && done.load() < total) { set_install_error("Download failed: all workers exited"); ok = false; break; }
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             size_t d = done.load(std::memory_order_relaxed);
             publish(d);
@@ -575,20 +433,12 @@ std::string g_stage_label;
         for (auto& t : pool) t.join();
         if (!MinecraftInstaller::is_cancelled()) publish(total);
 
-        if (MinecraftInstaller::is_cancelled()) {
-            set_install_error("Cancelled by user");
-            ok = false;
-        }
+        if (MinecraftInstaller::is_cancelled()) { set_install_error("Cancelled by user"); ok = false; }
         if (!MinecraftInstaller::is_cancelled() && !failed.empty()) {
-            LOG_WARN(stage_label << ": " << failed.size()
-                     << " file(s) failed in pool, retrying one by one...");
+            LOG_WARN(stage_label << ": " << failed.size() << " file(s) failed in pool, retrying one by one...");
             std::vector<DownloadItem> still_failed;
             for (const auto& it : failed) {
-                if (MinecraftInstaller::is_cancelled()) {
-                    set_install_error("Cancelled by user");
-                    ok = false;
-                    break;
-                }
+                if (MinecraftInstaller::is_cancelled()) { set_install_error("Cancelled by user"); ok = false; break; }
                 if (!download_item_once(it)) still_failed.push_back(it);
                 if (!MinecraftInstaller::is_cancelled()) publish(total);
             }
@@ -596,25 +446,18 @@ std::string g_stage_label;
                 const auto& first = still_failed.front();
                 std::string msg = "Failed to download: " + first.url;
                 if (!first.label.empty()) msg += " (" + first.label + ")";
-                if (still_failed.size() > 1)
-                    msg += " and " + std::to_string(still_failed.size() - 1) + " more";
+                if (still_failed.size() > 1) msg += " and " + std::to_string(still_failed.size() - 1) + " more";
                 g_last_error = msg;
-                for (const auto& it : still_failed)
-                    LOG_ERROR("Failed to download: " << it.url
-                              << (it.label.empty() ? "" : " (" + it.label + ")"));
+                for (const auto& it : still_failed) LOG_ERROR("Failed to download: " << it.url << (it.label.empty() ? "" : " (" + it.label + ")"));
                 ok = false;
             }
         }
-        if (MinecraftInstaller::is_cancelled()) {
-            set_install_error("Cancelled by user");
-            ok = false;
-        }
+        if (MinecraftInstaller::is_cancelled()) { set_install_error("Cancelled by user"); ok = false; }
         reset_speed_state();
         return ok;
     }
 
-    bool library_allowed(const json& lib)
-    {
+    bool library_allowed(const json& lib) {
         if (!lib.contains("rules") || !lib["rules"].is_array()) return true;
         bool allowed = false;
         for (const auto& rule : lib["rules"]) {
@@ -634,13 +477,8 @@ std::string g_stage_label;
         return allowed;
     }
 
-    bool ensure_libraries(const fs::path& version_dir, const json& metadata,
-                          int pct_from, int pct_to)
-    {
-        if (!metadata.contains("libraries")) {
-            set_install_error("Metadata has no libraries section");
-            return false;
-        }
+    bool ensure_libraries(const fs::path& version_dir, const json& metadata, int pct_from, int pct_to) {
+        if (!metadata.contains("libraries")) { set_install_error("Metadata has no libraries section"); return false; }
         std::vector<DownloadItem> items;
         for (const auto& library : metadata["libraries"]) {
             if (!library_allowed(library)) continue;
@@ -659,45 +497,30 @@ std::string g_stage_label;
         return parallel_download(std::move(items), "Libraries", 16, pct_from, pct_to);
     }
 
-    bool ensure_assets(const fs::path& minecraft, const json& metadata,
-                       int pct_from = -1, int pct_to = -1)
-    {
+    bool ensure_assets(const fs::path& minecraft, const json& metadata, int pct_from, int pct_to) {
         if (!metadata.contains("assetIndex")) return true;
-
         const auto& ai = metadata["assetIndex"];
         std::string asset_index_url = ai["url"];
         std::string asset_index_id = ai["id"];
         std::string index_sha = ai.value("sha1", std::string());
-
         fs::path assets = minecraft / "assets";
         fs::path index_file = assets / "indexes" / (asset_index_id + ".json");
-
-        bool index_ok = fs::exists(index_file) &&
-                        (index_sha.empty() || verify_sha1(index_file, index_sha));
+        bool index_ok = fs::exists(index_file) && (index_sha.empty() || verify_sha1(index_file, index_sha));
         if (!index_ok) {
             LOG_INFO("Downloading asset index...");
             if (!download(asset_index_url, index_file)) return false;
-            if (!index_sha.empty() && !verify_sha1(index_file, index_sha)) {
-                set_install_error("SHA1 mismatch: asset index " + asset_index_id);
-                return false;
-            }
+            if (!index_sha.empty() && !verify_sha1(index_file, index_sha)) { set_install_error("SHA1 mismatch: asset index " + asset_index_id); return false; }
         }
-
         json asset_index;
         try {
             std::ifstream file(index_file);
             if (!file) { set_install_error("Failed to open asset index"); return false; }
             file >> asset_index;
-        } catch (const std::exception& e) {
-            set_install_error(std::string("Failed to parse asset index: ") + e.what());
-            return false;
-        }
-
+        } catch (const std::exception& e) { set_install_error(std::string("Failed to parse asset index: ") + e.what()); return false; }
         if (!asset_index.contains("objects")) return true;
 
         std::vector<DownloadItem> items;
         items.reserve(asset_index["objects"].size());
-        
         for (const auto& [name, object] : asset_index["objects"].items()) {
             std::string hash = object["hash"];
             std::string prefix = hash.substr(0, 2);
@@ -707,370 +530,52 @@ std::string g_stage_label;
             it.sha1 = hash;
             it.label = name;
             it.size = json_file_size(object);
-            
-            // Файл будет проверен на размер внутри parallel_download
             items.push_back(std::move(it));
         }
         return parallel_download(std::move(items), "Assets", 16, pct_from, pct_to);
     }
 
-    bool ensure_natives(const fs::path& version_dir, const json& metadata)
-    {
-        fs::path natives_dir = version_dir / "natives";
-        fs::create_directories(natives_dir);
-
-#if defined(_WIN32)
-        const std::string native_classifier = "natives-windows";
-#elif defined(__APPLE__)
-        const std::string native_classifier = "natives-osx";
-#else
-        const std::string native_classifier = "natives-linux";
-#endif
-
-        std::vector<fs::path> native_jars;
-        std::vector<std::string> jar_ids;
-
-        for (const auto& library : metadata["libraries"]) {
-            if (!library_allowed(library)) continue;
-            if (!library.contains("downloads")) continue;
-            const auto& downloads = library["downloads"];
-            if (!downloads.contains("classifiers") ||
-                !downloads["classifiers"].contains(native_classifier)) continue;
-            auto native_info = downloads["classifiers"][native_classifier];
-            std::string url = native_info["url"];
-            std::string path = native_info["path"];
-            std::string native_sha = native_info.value("sha1", std::string());
-            
-            fs::path dest_jar = version_dir / "libraries" / path;
-            native_jars.push_back(dest_jar);
-            
-            std::string id = !native_sha.empty() ? native_sha : path;
-            jar_ids.push_back(id + " " + dest_jar.filename().string());
-        }
-
-        if (native_jars.empty()) return true;
-
-        std::sort(jar_ids.begin(), jar_ids.end());
-        fs::path marker = natives_dir / ".extracted-jars";
-        bool marker_ok = false;
-        if (fs::exists(marker)) {
-            std::vector<std::string> saved;
-            std::ifstream in(marker);
-            std::string line;
-            while (std::getline(in, line)) {
-                if (!line.empty()) saved.push_back(line);
+    bool installPerformanceMods(const fs::path& game_dir, const std::string& mc_version) {
+        if (!MinecraftInstaller::supportsPerformanceMods(mc_version)) { LOG_INFO("Performance mods skipped: Sodium/Lithium/FerriteCore are not available for Minecraft " << mc_version); return true; }
+        MinecraftInstaller::g_cancel_requested.store(false);
+        reset_speed_state();
+        try {
+            fs::path mods_dir = game_dir / "mods";
+            fs::create_directories(mods_dir);
+            fs::path manifest_path = mods_dir / ".launcher-mods.json";
+            json manifest = json::object();
+            if (fs::exists(manifest_path)) { try { std::ifstream mf(manifest_path); mf >> manifest; } catch (...) { manifest = json::object(); } }
+            const std::pair<std::string, std::string> mods[] = { {"Fabric API", "fabric-api"}, {"Sodium", "sodium"}, {"Lithium", "lithium"}, {"FerriteCore", "ferrite-core"}, };
+            std::vector<DownloadItem> items;
+            json new_manifest = json::object();
+            for (const auto& [title, slug] : mods) {
+                std::string api_url = "https://api.modrinth.com/v2/project/" + slug + "/version?game_versions=%5B%22" + mc_version + "%22%5D&loaders=%5B%22fabric%22%5D";
+                json versions = download_json(api_url);
+                if (!versions.is_array() || versions.empty()) { LOG_ERROR("Modrinth: no build of " << title << " for Minecraft " << mc_version); return false; }
+                const json* latest = &versions[0];
+                std::string latest_date = versions[0].value("date_published", std::string());
+                for (const auto& ver : versions) { std::string date = ver.value("date_published", std::string()); if (date > latest_date) { latest = &ver; latest_date = std::move(date); } }
+                const json& v = *latest;
+                const json* file = nullptr;
+                if (v.contains("files") && v["files"].is_array()) {
+                    for (const auto& f : v["files"]) { if (f.value("primary", false)) { file = &f; break; } }
+                    if (!file && !v["files"].empty()) file = &v["files"][0];
+                }
+                if (!file || !file->contains("url")) { LOG_ERROR("Modrinth: malformed response for " << title); return false; }
+                DownloadItem it;
+                it.url = (*file)["url"].get<std::string>();
+                it.dest = mods_dir / file->value("filename", slug + ".jar");
+                if (file->contains("hashes") && (*file)["hashes"].contains("sha1")) it.sha1 = (*file)["hashes"]["sha1"].get<std::string>();
+                it.label = title + " " + v.value("version_number", std::string());
+                std::string old_file = manifest.value(slug, std::string());
+                if (!old_file.empty() && old_file != it.dest.filename().string()) { std::error_code ec; fs::remove(mods_dir / old_file, ec); }
+                new_manifest[slug] = it.dest.filename().string();
+                items.push_back(std::move(it));
             }
-            std::sort(saved.begin(), saved.end());
-            marker_ok = (saved == jar_ids);
-        }
-        
-        bool natives_have_files = false;
-        for (const auto& entry : fs::directory_iterator(natives_dir)) {
-            if (entry.path().filename() == ".extracted-jars") continue;
-            natives_have_files = true;
-            break;
-        }
-        
-        if (marker_ok && natives_have_files) {
+            if (!parallel_download(std::move(items), "Mods", 16, 45, 95)) return false;
+            std::ofstream mf(manifest_path); mf << new_manifest.dump(2);
+            LOG_INFO("Performance mods installed: Fabric API, Sodium, Lithium, FerriteCore");
             return true;
-        }
-
-#ifndef _WIN32
-        if (std::system("command -v unzip >/dev/null 2>&1") != 0) {
-            set_install_error(
-                "unzip is not installed (needed to extract Minecraft native libraries). "
-                "Please install unzip.");
-            return false;
-        }
-#endif
-
-        for (size_t i = 0; i < native_jars.size(); ++i) {
-            const auto& jar = native_jars[i];
-            
-            std::string native_sha;
-            std::string url;
-            for (const auto& library : metadata["libraries"]) {
-                if (!library_allowed(library) || !library.contains("downloads")) continue;
-                const auto& downloads = library["downloads"];
-                if (!downloads.contains("classifiers") || !downloads["classifiers"].contains(native_classifier)) continue;
-                auto info = downloads["classifiers"][native_classifier];
-                if (version_dir / "libraries" / info["path"].get<std::string>() == jar) {
-                    url = info["url"];
-                    native_sha = info.value("sha1", "");
-                    break;
-                }
-            }
-
-            bool jar_ok = false;
-            if (fs::exists(jar)) {
-                if (json_file_size(metadata) > 0) {
-                    // Если размер есть, проверяем по размеру
-                }
-                // Для нативов оставим проверку SHA1, так как их мало
-                jar_ok = (native_sha.empty() || verify_sha1(jar, native_sha));
-            }
-
-            if (!jar_ok) {
-                LOG_INFO("Downloading natives: " << jar.filename().string());
-                if (!download(url, jar)) return false;
-                if (!native_sha.empty() && !verify_sha1(jar, native_sha)) {
-                    LOG_WARN("Natives SHA1 mismatch, retrying: " << jar.filename().string());
-                    if (!download(url, jar)) return false;
-                    if (!verify_sha1(jar, native_sha)) {
-                        set_install_error("Natives SHA1 mismatch persists: " + jar.filename().string());
-                        return false;
-                    }
-                }
-            }
-
-            const auto jar_u8 = jar.u8string();
-            const std::string jar_path_utf8(reinterpret_cast<const char*>(jar_u8.data()), jar_u8.size());
-            const auto natives_dir_u8 = natives_dir.u8string();
-            const std::string natives_path_utf8(reinterpret_cast<const char*>(natives_dir_u8.data()), natives_dir_u8.size());
-#ifdef _WIN32
-            std::string cmd = "tar -xf \"" + jar_path_utf8 + "\" -C \"" + natives_path_utf8 + "\"";
-#else
-            std::string cmd = "unzip -o -q \"" + jar_path_utf8 + "\" -d \"" + natives_path_utf8 + "\"";
-#endif
-            if (std::system(cmd.c_str()) != 0) {
-#ifdef _WIN32
-                set_install_error("Failed to extract natives (tar): " + jar_path_utf8);
-#else
-                set_install_error("Failed to extract natives (is unzip installed?): " + jar_path_utf8);
-#endif
-                return false;
-            }
-        }
-        
-        std::ofstream marker_out(marker);
-        if (marker_out) {
-            for (const auto& line : jar_ids) marker_out << line << '\n';
-        }
-        return true;
-    }
-}
-
-bool MinecraftInstaller::install(const std::string& version)
-{
-    g_cancel_requested.store(false);
-    reset_speed_state();
-    g_last_error.clear();
-    
-    try
-    {
-        fs::path minecraft = launcher_paths::shared_dir();
-        fs::path version_dir = minecraft / "versions" / version;
-        fs::path version_json = version_dir / (version + ".json");
-        fs::path client_jar = version_dir / (version + ".jar");
-
-        // 🚀 ОПТИМИЗАЦИЯ: "Быстрый путь" для уже установленной игры.
-        if (fs::exists(version_json) && fs::exists(client_jar) && version_complete(version_dir)) {
-            LOG_INFO("Minecraft " << version << " is already installed. Fast launching...");
-            report_progress(100, "Already installed");
-            return true; 
-        }
-
-        bool fresh = false;
-        json metadata;
-
-        if (fs::exists(version_json) && fs::exists(client_jar)) {
-            try {
-                std::ifstream file(version_json);
-                if (!file) throw std::runtime_error("cannot open");
-                file >> metadata;
-                
-                std::string client_sha;
-                if (metadata.contains("downloads") && metadata["downloads"].contains("client"))
-                    client_sha = metadata["downloads"]["client"].value("sha1", std::string());
-                    
-                if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
-                    LOG_WARN("Client JAR corrupted (SHA1 mismatch), re-downloading...");
-                    fresh = true;
-                }
-            } catch (const std::exception& e) {
-                LOG_WARN("version.json corrupted (" << e.what() << "), re-downloading");
-                fresh = true;
-            }
-        } else {
-            fresh = true;
-        }
-
-        if (fresh) {
-            auto versions = VersionManager::parse_manifest();
-            std::string version_url;
-            for (const auto& item : versions) {
-                if (item.id == version) { version_url = item.url; break; }
-            }
-            if (version_url.empty()) {
-                set_install_error("Version not found in manifest: " + version);
-                return false;
-            }
-
-            report_progress(2, "Version metadata...");
-            LOG_INFO("Downloading Minecraft " << version << " metadata...");
-            fs::create_directories(version_dir);
-            metadata = download_json(version_url);
-            {
-                std::ofstream file(version_json);
-                if (!file) {
-                    set_install_error("Failed to write " + version_json.string());
-                    return false;
-                }
-                file << metadata.dump(2);
-            }
-
-            if (!metadata.contains("downloads") || !metadata["downloads"].contains("client")) {
-                set_install_error("Client download information is missing");
-                return false;
-            }
-            std::string client_url = metadata["downloads"]["client"]["url"];
-            std::string client_sha = metadata["downloads"]["client"].value("sha1", std::string());
-            report_progress(6, "Downloading client...");
-            LOG_INFO("Downloading Minecraft client...");
-            if (!download(client_url, client_jar)) return false;
-            if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
-                LOG_WARN("Client SHA1 mismatch, retrying download...");
-                if (!download(client_url, client_jar)) return false;
-                if (!verify_sha1(client_jar, client_sha)) {
-                    set_install_error("Client SHA1 mismatch persists");
-                    return false;
-                }
-            }
-        }
-
-        if (!ensure_libraries(version_dir, metadata, 10, 45)) {
-            if (g_last_error.empty()) set_install_error("Failed to download libraries");
-            return false;
-        }
-        
-        if (!ensure_assets(minecraft, metadata, 45, 92)) {
-            if (g_last_error.empty()) set_install_error("Failed to download assets");
-            return false;
-        }
-        
-        report_progress(92, "Natives...");
-        if (!ensure_natives(version_dir, metadata)) {
-            if (g_last_error.empty()) set_install_error("Failed to install natives");
-            return false;
-        }
-        
-        report_progress(98, "Done");
-
-        mark_version_complete(version_dir);
-        LOG_INFO("Minecraft " << version << " installed successfully");
-        return true;
-    }
-    catch (const std::exception& e) {
-        set_install_error(std::string("MinecraftInstaller error: ") + e.what());
-        return false;
-    }
-}
-
-bool MinecraftInstaller::supportsPerformanceMods(const std::string& mc_version) {
-    if (mc_version.rfind("26.", 0) == 0) return true;
-
-    int major = 0, minor = 0, patch = 0;
-    if (std::sscanf(mc_version.c_str(), "%d.%d.%d", &major, &minor, &patch) < 2)
-        return false;
-
-    if (major != 1) return major > 1;
-    if (minor != 16) return minor > 16;
-    return patch >= 4;
-}
-
-bool MinecraftInstaller::installPerformanceMods(const fs::path& game_dir,
-                                                const std::string& mc_version)
-{
-    if (!supportsPerformanceMods(mc_version)) {
-        LOG_INFO("Performance mods skipped: Sodium/Lithium/FerriteCore "
-                 "are not available for Minecraft " << mc_version);
-        return true;
-    }
-    g_cancel_requested.store(false);
-    reset_speed_state();
-    try {
-        fs::path mods_dir = game_dir / "mods";
-        fs::create_directories(mods_dir);
-
-        fs::path manifest_path = mods_dir / ".launcher-mods.json";
-        json manifest = json::object();
-        if (fs::exists(manifest_path)) {
-            try {
-                std::ifstream mf(manifest_path);
-                mf >> manifest;
-            } catch (...) {
-                LOG_WARN("mods manifest corrupted, starting fresh");
-                manifest = json::object();
-            }
-        }
-
-        const std::pair<std::string, std::string> mods[] = {
-            {"Fabric API",  "fabric-api"},
-            {"Sodium",      "sodium"},
-            {"Lithium",     "lithium"},
-            {"FerriteCore", "ferrite-core"},
-        };
-
-        std::vector<DownloadItem> items;
-        json new_manifest = json::object();
-        for (const auto& [title, slug] : mods) {
-
-            std::string api_url = "https://api.modrinth.com/v2/project/" + slug +
-                "/version?game_versions=%5B%22" + mc_version + "%22%5D&loaders=%5B%22fabric%22%5D";
-            json versions = download_json(api_url);
-            if (!versions.is_array() || versions.empty()) {
-                LOG_ERROR("Modrinth: no build of " << title << " for Minecraft "
-                          << mc_version);
-                return false;
-            }
-
-            const json* latest = &versions[0];
-            std::string latest_date = versions[0].value("date_published", std::string());
-            for (const auto& ver : versions) {
-                std::string date = ver.value("date_published", std::string());
-                if (date > latest_date) {
-                    latest = &ver;
-                    latest_date = std::move(date);
-                }
-            }
-            const json& v = *latest;
-            const json* file = nullptr;
-            if (v.contains("files") && v["files"].is_array()) {
-                for (const auto& f : v["files"]) {
-                    if (f.value("primary", false)) { file = &f; break; }
-                }
-                if (!file && !v["files"].empty()) file = &v["files"][0];
-            }
-            if (!file || !file->contains("url")) {
-                LOG_ERROR("Modrinth: malformed response for " << title);
-                return false;
-            }
-
-            DownloadItem it;
-            it.url = (*file)["url"].get<std::string>();
-            it.dest = mods_dir / file->value("filename", slug + ".jar");
-            if (file->contains("hashes") && (*file)["hashes"].contains("sha1"))
-                it.sha1 = (*file)["hashes"]["sha1"].get<std::string>();
-            it.label = title + " " + v.value("version_number", std::string());
-
-            std::string old_file = manifest.value(slug, std::string());
-            if (!old_file.empty() && old_file != it.dest.filename().string()) {
-                std::error_code ec;
-                fs::remove(mods_dir / old_file, ec);
-                if (!ec) LOG_INFO("Removed old version of " << title << ": " << old_file);
-            }
-            new_manifest[slug] = it.dest.filename().string();
-            items.push_back(std::move(it));
-        }
-
-        if (!parallel_download(std::move(items), "Mods", 16, 45, 95)) return false;
-
-        std::ofstream mf(manifest_path);
-        mf << new_manifest.dump(2);
-        LOG_INFO("Performance mods installed: Fabric API, Sodium, Lithium, FerriteCore");
-        return true;
-    } catch (const std::exception& e) {
-        LOG_ERROR("Mods install error: " << e.what());
-        return false;
+        } catch (const std::exception& e) { LOG_ERROR("Mods install error: " << e.what()); return false; }
     }
 }
