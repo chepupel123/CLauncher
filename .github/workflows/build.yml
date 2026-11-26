@@ -25,6 +25,7 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          cache: true
           install: >-
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
@@ -34,6 +35,14 @@ jobs:
             mingw-w64-ucrt-x86_64-glfw
             mingw-w64-ucrt-x86_64-nlohmann-json
             mingw-w64-ucrt-x86_64-ca-certificates
+
+      - name: Cache CMake FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: win-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            win-deps-
 
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -97,6 +106,14 @@ jobs:
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
             file wget zip
 
+      - name: Cache CMake FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: linux-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            linux-deps-
+
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 
@@ -132,7 +149,15 @@ jobs:
           echo "=== AppDir tree ==="
           find AppDir -type f -o -type l | sort
 
+      - name: Cache linuxdeploy
+        id: cache-linuxdeploy
+        uses: actions/cache@v4
+        with:
+          path: linuxdeploy-x86_64.AppImage
+          key: linuxdeploy-x86_64-continuous
+
       - name: Download linuxdeploy
+        if: steps.cache-linuxdeploy.outputs.cache-hit != 'true'
         run: |
           wget --timeout=60 --tries=3 -q \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
@@ -142,6 +167,9 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"   # обход FUSE на раннере GitHub
         run: |
+          # Гарантируем права на запуск, если файл пришел из кэша
+          chmod +x linuxdeploy-x86_64.AppImage
+          
           mkdir -p release/CLauncher-Linux
           export OUTPUT="release/CLauncher-Linux/CLauncher-x86_64.AppImage"
           # --executable явно указывает linuxdeploy главный бинарник.
