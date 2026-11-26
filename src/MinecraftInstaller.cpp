@@ -83,9 +83,10 @@ namespace {
 
         if (!asset_index.contains("objects")) return true;
 
+
+
         std::vector<DownloadItem> items;
         items.reserve(asset_index["objects"].size());
-        
         for (const auto& [name, object] : asset_index["objects"].items()) {
             std::string hash = object["hash"];
             std::string prefix = hash.substr(0, 2);
@@ -95,28 +96,8 @@ namespace {
             it.sha1 = hash;
             it.label = name;
             it.size = json_file_size(object);
-
-            // 🚀 ОПТИМИЗАЦИЯ: Проверка по размеру вместо SHA1.
-            // Если файл существует и его размер совпадает с манифестом — 
-            // мы считаем его целым и НЕ добавляем в очередь на скачивание/проверку.
-            if (fs::exists(it.dest)) {
-                if (it.size > 0) {
-                    if (fs::file_size(it.dest) == it.size) {
-                        continue; // Пропускаем
-                    }
-                } else {
-                    continue; // Если размер неизвестен, доверяем существованию файла
-                }
-            }
-
             items.push_back(std::move(it));
         }
-
-        if (items.empty()) {
-            LOG_INFO("All " << asset_index["objects"].size() << " assets are already present. Skipping.");
-            return true;
-        }
-
         return parallel_download(std::move(items), "Assets", 16, pct_from, pct_to);
     }
 
@@ -136,8 +117,6 @@ namespace {
         std::vector<fs::path> native_jars;
         std::vector<std::string> jar_ids;
 
-        // 🚀 ОПТИМИЗАЦИЯ: Сначала формируем ID на основе метаданных, 
-        // не читая файлы с диска (раньше тут был медленный sha1_of_file).
         for (const auto& library : metadata["libraries"]) {
             if (!library_allowed(library)) continue;
             if (!library.contains("downloads")) continue;
@@ -148,17 +127,30 @@ namespace {
             std::string url = native_info["url"];
             std::string path = native_info["path"];
             std::string native_sha = native_info.value("sha1", std::string());
-            
             fs::path dest_jar = version_dir / "libraries" / path;
+            bool jar_ok = fs::exists(dest_jar) &&
+                          (native_sha.empty() || verify_sha1(dest_jar, native_sha));
+            if (!jar_ok) {
+                LOG_INFO("Downloading natives: " << path);
+                if (!download(url, dest_jar)) return false;
+                if (!native_sha.empty() && !verify_sha1(dest_jar, native_sha)) {
+                    LOG_WARN("Natives SHA1 mismatch, retrying: " << path);
+                    if (!download(url, dest_jar)) return false;
+                    if (!verify_sha1(dest_jar, native_sha)) {
+                        set_install_error("Natives SHA1 mismatch persists: " + path);
+                        return false;
+                    }
+                }
+            }
             native_jars.push_back(dest_jar);
-            
-            std::string id = !native_sha.empty() ? native_sha : path;
+            std::string id = native_sha;
+            if (id.empty() && !sha1_of_file(dest_jar, id))
+                id = dest_jar.filename().string();
             jar_ids.push_back(id + " " + dest_jar.filename().string());
         }
 
         if (native_jars.empty()) return true;
 
-        // 🚀 ОПТИМИЗАЦИЯ: Проверяем маркер ДО того, как начнем проверять хэши JAR-файлов.
         std::sort(jar_ids.begin(), jar_ids.end());
         fs::path marker = natives_dir / ".extracted-jars";
         bool marker_ok = false;
@@ -172,20 +164,14 @@ namespace {
             std::sort(saved.begin(), saved.end());
             marker_ok = (saved == jar_ids);
         }
-        
         bool natives_have_files = false;
         for (const auto& entry : fs::directory_iterator(natives_dir)) {
             if (entry.path().filename() == ".extracted-jars") continue;
             natives_have_files = true;
             break;
         }
-        
-        if (marker_ok && natives_have_files) {
-            LOG_INFO("Natives already extracted. Skipping checks.");
-            return true; // Быстрый выход
-        }
+        if (marker_ok && natives_have_files) return true;
 
-        // Если маркера нет (или он битый) — качаем и проверяем JAR-файлы
 #ifndef _WIN32
         if (std::system("command -v unzip >/dev/null 2>&1") != 0) {
             set_install_error(
@@ -194,59 +180,30 @@ namespace {
             return false;
         }
 #endif
-
-        for (size_t i = 0; i < native_jars.size(); ++i) {
-            const auto& jar = native_jars[i];
-            
-            // Достаем URL и SHA1 из метаданных для текущего JAR (можно сохранить в структуру при первом цикле, 
-            // но для простоты извлекаем здесь или используем массив, оставленный из прошлого цикла)
-            std::string native_sha;
-            std::string url;
-            for (const auto& library : metadata["libraries"]) {
-                if (!library_allowed(library) || !library.contains("downloads")) continue;
-                const auto& downloads = library["downloads"];
-                if (!downloads.contains("classifiers") || !downloads["classifiers"].contains(native_classifier)) continue;
-                auto info = downloads["classifiers"][native_classifier];
-                if (version_dir / "libraries" / info["path"].get<std::string>() == jar) {
-                    url = info["url"];
-                    native_sha = info.value("sha1", "");
-                    break;
-                }
-            }
-
-            bool jar_ok = fs::exists(jar) && (native_sha.empty() || verify_sha1(jar, native_sha));
-            if (!jar_ok) {
-                LOG_INFO("Downloading natives: " << jar.filename().string());
-                if (!download(url, jar)) return false;
-                if (!native_sha.empty() && !verify_sha1(jar, native_sha)) {
-                    LOG_WARN("Natives SHA1 mismatch, retrying: " << jar.filename().string());
-                    if (!download(url, jar)) return false;
-                    if (!verify_sha1(jar, native_sha)) {
-                        set_install_error("Natives SHA1 mismatch persists: " + jar.filename().string());
-                        return false;
-                    }
-                }
-            }
-
+        for (const auto& jar : native_jars) {
             const auto jar_u8 = jar.u8string();
-            const std::string jar_path_utf8(reinterpret_cast<const char*>(jar_u8.data()), jar_u8.size());
+            const std::string jar_path_utf8(
+                reinterpret_cast<const char*>(jar_u8.data()), jar_u8.size());
             const auto natives_dir_u8 = natives_dir.u8string();
-            const std::string natives_path_utf8(reinterpret_cast<const char*>(natives_dir_u8.data()), natives_dir_u8.size());
+            const std::string natives_path_utf8(
+                reinterpret_cast<const char*>(natives_dir_u8.data()), natives_dir_u8.size());
 #ifdef _WIN32
-            std::string cmd = "tar -xf \"" + jar_path_utf8 + "\" -C \"" + natives_path_utf8 + "\"";
+            std::string cmd = "tar -xf \"" + jar_path_utf8 +
+                              "\" -C \"" + natives_path_utf8 + "\"";
 #else
-            std::string cmd = "unzip -o -q \"" + jar_path_utf8 + "\" -d \"" + natives_path_utf8 + "\"";
+            std::string cmd = "unzip -o -q \"" + jar_path_utf8 +
+                              "\" -d \"" + natives_path_utf8 + "\"";
 #endif
             if (std::system(cmd.c_str()) != 0) {
 #ifdef _WIN32
                 set_install_error("Failed to extract natives (tar): " + jar_path_utf8);
 #else
-                set_install_error("Failed to extract natives (is unzip installed?): " + jar_path_utf8);
+                set_install_error("Failed to extract natives (is unzip installed?): " +
+                                  jar_path_utf8);
 #endif
                 return false;
             }
         }
-        
         std::ofstream marker_out(marker);
         if (marker_out) {
             for (const auto& line : jar_ids) marker_out << line << '\n';
@@ -261,7 +218,6 @@ bool MinecraftInstaller::install(const std::string& version)
     g_cancel_requested.store(false);
     reset_speed_state();
     g_last_error.clear();
-    
     try
     {
         fs::path minecraft = launcher_paths::shared_dir();
@@ -269,34 +225,18 @@ bool MinecraftInstaller::install(const std::string& version)
         fs::path version_json = version_dir / (version + ".json");
         fs::path client_jar = version_dir / (version + ".jar");
 
-        // 🚀 ОПТИМИЗАЦИЯ: "Быстрый путь" для уже установленной игры.
-        // Если маркер есть и файлы на месте — мы вообще не проверяем хэши и 
-        // не парсим JSON-манифесты, а сразу запускаем игру.
-        if (fs::exists(version_json) && fs::exists(client_jar) && version_complete(version_dir)) {
-            LOG_INFO("Minecraft " << version << " is already installed. Fast launching...");
-            report_progress(100, "Already installed");
-            return true; 
-        }
-
         bool fresh = false;
         json metadata;
 
-        // Проверяем, можно ли использовать существующие файлы, или нужно качать заново
-        if (fs::exists(version_json) && fs::exists(client_jar)) {
+        if (fs::exists(version_json) && fs::exists(client_jar) &&
+            version_complete(version_dir)) {
+
+
+            LOG_INFO("Minecraft " << version << " is already downloaded, verifying...");
             try {
                 std::ifstream file(version_json);
                 if (!file) throw std::runtime_error("cannot open");
                 file >> metadata;
-                
-                // Проверяем целостность клиента (только если маркера нет, но файлы есть)
-                std::string client_sha;
-                if (metadata.contains("downloads") && metadata["downloads"].contains("client"))
-                    client_sha = metadata["downloads"]["client"].value("sha1", std::string());
-                    
-                if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
-                    LOG_WARN("Client JAR corrupted (SHA1 mismatch), re-downloading...");
-                    fresh = true;
-                }
             } catch (const std::exception& e) {
                 LOG_WARN("version.json corrupted (" << e.what() << "), re-downloading");
                 fresh = true;
@@ -348,28 +288,41 @@ bool MinecraftInstaller::install(const std::string& version)
             }
         }
 
-        // Удален дублирующий блок проверки client_jar, который тормозил запуск.
 
+
+
+
+
+        {
+            std::string client_sha;
+            if (metadata.contains("downloads") && metadata["downloads"].contains("client"))
+                client_sha = metadata["downloads"]["client"].value("sha1", std::string());
+            if (!client_sha.empty() && !verify_sha1(client_jar, client_sha)) {
+                report_progress(4, "Re-downloading client...");
+                LOG_WARN("Client JAR corrupted (SHA1 mismatch), re-downloading...");
+                std::string client_url = metadata["downloads"]["client"]["url"];
+                if (!download(client_url, client_jar)) return false;
+                if (!verify_sha1(client_jar, client_sha)) {
+                    set_install_error("Client JAR re-download failed");
+                    return false;
+                }
+            }
+        }
         if (!ensure_libraries(version_dir, metadata, 10, 45)) {
             if (g_last_error.empty()) set_install_error("Failed to download libraries");
             return false;
         }
-        
         if (!ensure_assets(minecraft, metadata, 45, 92)) {
             if (g_last_error.empty()) set_install_error("Failed to download assets");
             return false;
         }
-        
         report_progress(92, "Natives...");
         if (!ensure_natives(version_dir, metadata)) {
             if (g_last_error.empty()) set_install_error("Failed to install natives");
             return false;
         }
-        
         report_progress(98, "Done");
 
-        // После успешной установки/проверки ставим маркер, 
-        // который позволит в следующий раз запуститься за долю секунды.
         mark_version_complete(version_dir);
         LOG_INFO("Minecraft " << version << " installed successfully");
         return true;
