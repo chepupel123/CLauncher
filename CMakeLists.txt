@@ -138,3 +138,15 @@ if(WIN32)
         )
     endif()
 endif()
+# ========== INSTALL & RELEASE SIZE OPTIMIZATION ==========
+install(TARGETS CLauncher RUNTIME DESTINATION bin)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(CLauncher PRIVATE
+        $<$<CONFIG:Release>:-Os -flto=auto -ffunction-sections -fdata-sections>
+    )
+    target_link_options(CLauncher PRIVATE
+        $<$<CONFIG:Release>:-s -flto=auto -Wl,--gc-sections>
+    )
+endif()
+
