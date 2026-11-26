@@ -121,6 +121,25 @@ namespace downloader {
         MinecraftInstaller::g_download_eta_seconds.store(eta, std::memory_order_relaxed);
     }
 
+    // === ВОЗВРАЩЕНЫ ПРОПАВШИЕ ФУНКЦИИ ===
+    bool is_version_less(const std::string& version, int target_major, int target_minor, int target_patch) {
+        int major = 0, minor = 0, patch = 0;
+        std::sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch);
+        if (major != target_major) return major < target_major;
+        if (minor != target_minor) return minor < target_minor;
+        return patch < target_patch;
+    }
+
+    bool version_complete(const fs::path& dir) {
+        std::error_code ec;
+        return fs::is_regular_file(dir / ".complete", ec);
+    }
+
+    void mark_version_complete(const fs::path& dir) {
+        std::ofstream(dir / ".complete", std::ios::binary).put('\n');
+    }
+    // ====================================
+
     std::once_flag curl_global_once;
     void ensure_curl_global() { std::call_once(curl_global_once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); }); }
     bool apply_tls(CURL* curl) { ensure_curl_global(); return curl_tls::apply(curl); }
@@ -333,8 +352,6 @@ namespace downloader {
         ensure_curl_global();
         std::vector<DownloadItem> todo;
         todo.reserve(items.size());
-        
-        // БЫСТРАЯ ПРОВЕРКА ПО РАЗМЕРУ
         for (auto& it : items) {
             if (MinecraftInstaller::is_cancelled()) { set_install_error("Cancelled by user"); return false; }
             bool cached = false;
@@ -534,48 +551,49 @@ namespace downloader {
         }
         return parallel_download(std::move(items), "Assets", 16, pct_from, pct_to);
     }
+}
 
-    bool installPerformanceMods(const fs::path& game_dir, const std::string& mc_version) {
-        if (!MinecraftInstaller::supportsPerformanceMods(mc_version)) { LOG_INFO("Performance mods skipped: Sodium/Lithium/FerriteCore are not available for Minecraft " << mc_version); return true; }
-        MinecraftInstaller::g_cancel_requested.store(false);
-        reset_speed_state();
-        try {
-            fs::path mods_dir = game_dir / "mods";
-            fs::create_directories(mods_dir);
-            fs::path manifest_path = mods_dir / ".launcher-mods.json";
-            json manifest = json::object();
-            if (fs::exists(manifest_path)) { try { std::ifstream mf(manifest_path); mf >> manifest; } catch (...) { manifest = json::object(); } }
-            const std::pair<std::string, std::string> mods[] = { {"Fabric API", "fabric-api"}, {"Sodium", "sodium"}, {"Lithium", "lithium"}, {"FerriteCore", "ferrite-core"}, };
-            std::vector<DownloadItem> items;
-            json new_manifest = json::object();
-            for (const auto& [title, slug] : mods) {
-                std::string api_url = "https://api.modrinth.com/v2/project/" + slug + "/version?game_versions=%5B%22" + mc_version + "%22%5D&loaders=%5B%22fabric%22%5D";
-                json versions = download_json(api_url);
-                if (!versions.is_array() || versions.empty()) { LOG_ERROR("Modrinth: no build of " << title << " for Minecraft " << mc_version); return false; }
-                const json* latest = &versions[0];
-                std::string latest_date = versions[0].value("date_published", std::string());
-                for (const auto& ver : versions) { std::string date = ver.value("date_published", std::string()); if (date > latest_date) { latest = &ver; latest_date = std::move(date); } }
-                const json& v = *latest;
-                const json* file = nullptr;
-                if (v.contains("files") && v["files"].is_array()) {
-                    for (const auto& f : v["files"]) { if (f.value("primary", false)) { file = &f; break; } }
-                    if (!file && !v["files"].empty()) file = &v["files"][0];
-                }
-                if (!file || !file->contains("url")) { LOG_ERROR("Modrinth: malformed response for " << title); return false; }
-                DownloadItem it;
-                it.url = (*file)["url"].get<std::string>();
-                it.dest = mods_dir / file->value("filename", slug + ".jar");
-                if (file->contains("hashes") && (*file)["hashes"].contains("sha1")) it.sha1 = (*file)["hashes"]["sha1"].get<std::string>();
-                it.label = title + " " + v.value("version_number", std::string());
-                std::string old_file = manifest.value(slug, std::string());
-                if (!old_file.empty() && old_file != it.dest.filename().string()) { std::error_code ec; fs::remove(mods_dir / old_file, ec); }
-                new_manifest[slug] = it.dest.filename().string();
-                items.push_back(std::move(it));
+// Вне namespace downloader
+bool MinecraftInstaller::installPerformanceMods(const fs::path& game_dir, const std::string& mc_version) {
+    if (!MinecraftInstaller::supportsPerformanceMods(mc_version)) { LOG_INFO("Performance mods skipped: Sodium/Lithium/FerriteCore are not available for Minecraft " << mc_version); return true; }
+    MinecraftInstaller::g_cancel_requested.store(false);
+    downloader::reset_speed_state();
+    try {
+        fs::path mods_dir = game_dir / "mods";
+        fs::create_directories(mods_dir);
+        fs::path manifest_path = mods_dir / ".launcher-mods.json";
+        json manifest = json::object();
+        if (fs::exists(manifest_path)) { try { std::ifstream mf(manifest_path); mf >> manifest; } catch (...) { manifest = json::object(); } }
+        const std::pair<std::string, std::string> mods[] = { {"Fabric API", "fabric-api"}, {"Sodium", "sodium"}, {"Lithium", "lithium"}, {"FerriteCore", "ferrite-core"}, };
+        std::vector<downloader::DownloadItem> items;
+        json new_manifest = json::object();
+        for (const auto& [title, slug] : mods) {
+            std::string api_url = "https://api.modrinth.com/v2/project/" + slug + "/version?game_versions=%5B%22" + mc_version + "%22%5D&loaders=%5B%22fabric%22%5D";
+            json versions = downloader::download_json(api_url);
+            if (!versions.is_array() || versions.empty()) { LOG_ERROR("Modrinth: no build of " << title << " for Minecraft " << mc_version); return false; }
+            const json* latest = &versions[0];
+            std::string latest_date = versions[0].value("date_published", std::string());
+            for (const auto& ver : versions) { std::string date = ver.value("date_published", std::string()); if (date > latest_date) { latest = &ver; latest_date = std::move(date); } }
+            const json& v = *latest;
+            const json* file = nullptr;
+            if (v.contains("files") && v["files"].is_array()) {
+                for (const auto& f : v["files"]) { if (f.value("primary", false)) { file = &f; break; } }
+                if (!file && !v["files"].empty()) file = &v["files"][0];
             }
-            if (!parallel_download(std::move(items), "Mods", 16, 45, 95)) return false;
-            std::ofstream mf(manifest_path); mf << new_manifest.dump(2);
-            LOG_INFO("Performance mods installed: Fabric API, Sodium, Lithium, FerriteCore");
-            return true;
-        } catch (const std::exception& e) { LOG_ERROR("Mods install error: " << e.what()); return false; }
-    }
+            if (!file || !file->contains("url")) { LOG_ERROR("Modrinth: malformed response for " << title); return false; }
+            downloader::DownloadItem it;
+            it.url = (*file)["url"].get<std::string>();
+            it.dest = mods_dir / file->value("filename", slug + ".jar");
+            if (file->contains("hashes") && (*file)["hashes"].contains("sha1")) it.sha1 = (*file)["hashes"]["sha1"].get<std::string>();
+            it.label = title + " " + v.value("version_number", std::string());
+            std::string old_file = manifest.value(slug, std::string());
+            if (!old_file.empty() && old_file != it.dest.filename().string()) { std::error_code ec; fs::remove(mods_dir / old_file, ec); }
+            new_manifest[slug] = it.dest.filename().string();
+            items.push_back(std::move(it));
+        }
+        if (!downloader::parallel_download(std::move(items), "Mods", 16, 45, 95)) return false;
+        std::ofstream mf(manifest_path); mf << new_manifest.dump(2);
+        LOG_INFO("Performance mods installed: Fabric API, Sodium, Lithium, FerriteCore");
+        return true;
+    } catch (const std::exception& e) { LOG_ERROR("Mods install error: " << e.what()); return false; }
 }
